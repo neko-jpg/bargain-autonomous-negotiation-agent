@@ -2,12 +2,14 @@ import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatOpenAI } from '@langchain/openai';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { z } from 'zod';
-import { AgentAlternative, Listing, AgentActionType, ActionReasoning, NegotiationOffer, NegotiationTerms } from '@/types/negotiation';
+import { AgentAlternative, Listing, AgentActionType, ActionReasoning, NegotiationOffer, NegotiationTerms, NegotiationMemory } from '@/types/negotiation';
 import { normalizeNegotiationTerms } from '@/lib/negotiation/terms';
 
 export interface AgentPlanningResult {
   action: AgentActionType;
   price: number;
+  targetOfferId?: string;
+  targetOfferVersion?: number;
   waitHours?: number;
   reasoning: ActionReasoning;
   explanationMessage: string;
@@ -31,6 +33,8 @@ const isUsableApiKey = (value: string | undefined): value is string => {
 const AgentPlanSchema = z.object({
   action: z.enum(['make_offer', 'counter_offer', 'accept_offer', 'reject_offer', 'wait', 'ask_user']),
   price: z.number().finite().int().nonnegative(),
+  targetOfferId: z.string().min(1).max(160).optional(),
+  targetOfferVersion: z.number().finite().int().min(1).optional(),
   waitHours: z.number().finite().int().min(1).max(72).optional(),
   summaryReason: z.string().min(1).max(300),
   factors: z.array(z.string().min(1).max(120)).min(1).max(6),
@@ -90,7 +94,7 @@ export class LLMProviderService {
             apiKey: googleApiKey,
             // Older Gemini Flash models are no longer available to this API key.
             // Keep the model configurable, but use a current stable model by default.
-            modelName,
+            model: modelName,
             temperature: 0.2,
             maxRetries: 1,
           }), provider: 'google', modelName };
@@ -127,9 +131,10 @@ export class LLMProviderService {
     reservationPrice: number,
     urgency: 'low' | 'medium' | 'high',
     history: NegotiationOffer[],
-    winProb: number,
+    acceptanceScore: number,
     batna: number,
-    baseTerms?: Partial<NegotiationTerms>
+    baseTerms?: Partial<NegotiationTerms>,
+    memory?: NegotiationMemory
   ): Promise<AgentPlanningResult> {
     const configuredModel = this.getModel();
     const model = configuredModel?.model;
@@ -182,7 +187,8 @@ export class LLMProviderService {
           history.map((h) => ({ role: h.senderRole, price: h.price, terms: h.terms, action: h.actionType }))
         )}
 直近の相手提示: ${lastOpponentOffer ? `¥${lastOpponentOffer.price.toLocaleString()}` : 'まだなし'}
-成約予測確率: ${winProb}%
+受諾スコア（統計的に校正された確率ではない）: ${acceptanceScore}
+過去の交渉メモ: ${JSON.stringify(memory ?? {})}
 
 最適なアクションと金額を決定してください。`;
 
@@ -208,13 +214,15 @@ export class LLMProviderService {
           return {
             action: parsed.action,
             price: parsed.price,
+            targetOfferId: parsed.targetOfferId,
+            targetOfferVersion: parsed.targetOfferVersion,
             waitHours: parsed.waitHours,
             reasoning: {
               summary: parsed.summaryReason,
               marketMedian: listing.marketMedianPrice,
               daysListed: listing.daysListed,
               demandTrend: listing.recentDemand,
-              winProbability: winProb,
+              acceptanceScore,
               factors: parsed.factors,
             },
             explanationMessage: parsed.explanationMessage,
@@ -223,6 +231,8 @@ export class LLMProviderService {
               {
                 action: parsed.action,
                 price: parsed.price,
+                targetOfferId: parsed.targetOfferId,
+                targetOfferVersion: parsed.targetOfferVersion,
                 terms: normalizeNegotiationTerms(listing, parsed.terms ?? baseTerms),
                 rationale: parsed.summaryReason,
                 confidence: 0.7,
@@ -257,7 +267,7 @@ export class LLMProviderService {
       reservationPrice,
       urgency,
       history,
-      winProb,
+      acceptanceScore,
       batna
     );
     return {
@@ -312,7 +322,7 @@ export class LLMProviderService {
     reservationPrice: number,
     urgency: 'low' | 'medium' | 'high',
     history: NegotiationOffer[],
-    winProb: number,
+    acceptanceScore: number,
     batna: number
   ): Omit<AgentPlanningResult, 'alternatives' | 'telemetry'> {
     const lastOpponentOffer = [...history]
@@ -336,7 +346,7 @@ export class LLMProviderService {
                 marketMedian: listing.marketMedianPrice,
                 daysListed: listing.daysListed,
                 demandTrend: listing.recentDemand,
-                winProbability: 95,
+                acceptanceScore: 95,
                 factors: [
                   `上限価格 ¥${reservationPrice.toLocaleString()} を遵守`,
                   `相場中央値との差: ${Math.round(((lastOpponentOffer.price - listing.marketMedianPrice) / listing.marketMedianPrice) * 100)}%`,
@@ -363,7 +373,7 @@ export class LLMProviderService {
               marketMedian: listing.marketMedianPrice,
               daysListed: listing.daysListed,
               demandTrend: listing.recentDemand,
-              winProbability: winProb,
+              acceptanceScore,
               factors: [
                 `出品から${listing.daysListed}日経過しており売り手の値下げインセンティブが高い`,
                 '直近需要が落ち着いているため即座に買い手が現れるリスクが低い',
@@ -390,7 +400,7 @@ export class LLMProviderService {
             marketMedian: listing.marketMedianPrice,
             daysListed: listing.daysListed,
             demandTrend: listing.recentDemand,
-            winProbability: winProb,
+                acceptanceScore,
             factors: [
               `市場相場 ¥${listing.marketMedianPrice.toLocaleString()} との乖離を調整`,
               `出品期間: ${listing.daysListed}日経過`,
@@ -417,7 +427,7 @@ export class LLMProviderService {
             marketMedian: listing.marketMedianPrice,
             daysListed: listing.daysListed,
             demandTrend: listing.recentDemand,
-            winProbability: winProb,
+            acceptanceScore,
             factors: [
               `市場中央値 ¥${listing.marketMedianPrice.toLocaleString()} を基準に算出`,
               `出品価格 ¥${listing.price.toLocaleString()} からの適正ディスカウント`,
@@ -441,7 +451,7 @@ export class LLMProviderService {
                 marketMedian: listing.marketMedianPrice,
                 daysListed: listing.daysListed,
                 demandTrend: listing.recentDemand,
-                winProbability: 95,
+                acceptanceScore: 95,
                 factors: [
                   `最低許容価格 ¥${reservationPrice.toLocaleString()} を確保`,
                   `売却優先度(${urgency === 'high' ? '高' : '通常'})に応じた迅速な成約`,
@@ -471,7 +481,7 @@ export class LLMProviderService {
             marketMedian: listing.marketMedianPrice,
             daysListed: listing.daysListed,
             demandTrend: listing.recentDemand,
-            winProbability: winProb,
+              acceptanceScore,
             factors: [
               `出品期間${listing.daysListed}日の経過と閲覧数(${listing.viewsCount})を分析`,
               `最低許容 ¥${reservationPrice.toLocaleString()} を下回らない範囲で譲歩`,
@@ -490,7 +500,7 @@ export class LLMProviderService {
             marketMedian: listing.marketMedianPrice,
             daysListed: listing.daysListed,
             demandTrend: listing.recentDemand,
-            winProbability: winProb,
+                acceptanceScore,
             factors: ['初回出品価格の維持', '買い手からの初期オファー待ち'],
           },
           explanationMessage: `出品価格は¥${listing.price.toLocaleString()}となります。`,

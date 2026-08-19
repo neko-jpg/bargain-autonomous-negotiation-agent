@@ -1,0 +1,15 @@
+# Wrangler/OpenNext local Worker preview variables.
+# Keep real secrets in .dev.vars or .env.local; never commit them.
+NEXTJS_ENV=development
+BARGAIN_ENV=local
+BARGAIN_ENABLE_DEMO_HEADERS=false
+
+# Optional local PostgreSQL connection. Production must use a real database.
+DATABASE_URL=postgresql://user:password@localhost:5432/bargain
+BARGAIN_PRIVATE_STATE_KEY=replace_with_a_long_random_secret
+BARGAIN_SESSION_SECRET=replace_with_another_long_random_secret
+
+# Optional LLM provider settings.
+BARGAIN_LLM_PROVIDER=google
+GOOGLE_API_KEY=replace_with_provider_key
+BARGAIN_GOOGLE_MODEL=gemini-3.6-flash

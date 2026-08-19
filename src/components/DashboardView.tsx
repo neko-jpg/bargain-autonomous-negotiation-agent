@@ -86,7 +86,7 @@ export function DashboardView({ onSelectNegotiation, session }: DashboardViewPro
 
         <Metric icon={TrendingDown} label="買い手の節約" value={summary ? `¥${summary.buyerSaved.toLocaleString('ja-JP')}` : '—'} hint={summary ? `${summary.buyerSavedPercent}% OFF · 合意価格との差` : '合意後に表示'} tone="surface" className="dashboard-metric--savings" />
         <Metric icon={Clock3} label="アクション" value={`${activityCount}回`} hint="イベントログに記録された判断" tone="mint" className="dashboard-metric--actions" />
-        <Metric icon={ShieldCheck} label="成約見込み" value={latestReasoning ? `${latestReasoning.winProbability}%` : '—'} hint="最新のエージェント推定値" tone="rose" className="dashboard-metric--confidence" />
+        <Metric icon={ShieldCheck} label="受諾スコア" value={latestReasoning ? `${latestReasoning.acceptanceScore}%` : '—'} hint="最新の決定論的評価" tone="rose" className="dashboard-metric--confidence" />
       </section>
 
       <section className="dashboard-operations" aria-label="AI運用状況">

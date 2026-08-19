@@ -2,9 +2,14 @@
 .env
 .env.*
 !.env.local.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 
 # Next.js build output
 .next/
+.open-next/
+.wrangler/
 out/
 
 # Dependencies and local logs

@@ -64,7 +64,11 @@ export const NegotiationActionRequestSchema = z.discriminatedUnion('type', [
     messageText: z.string().trim().min(1).max(280).optional(),
     terms: NegotiationTermsInputSchema.optional(),
   }),
-  versionedAction.extend({ type: z.literal('human_accept') }),
+  versionedAction.extend({
+    type: z.literal('human_accept'),
+    targetOfferId: z.string().trim().min(1).max(160),
+    targetOfferVersion: z.number().finite().int().min(1).optional(),
+  }),
   versionedAction.extend({ type: z.literal('human_reject') }),
   versionedAction.extend({ type: z.literal('pause') }),
   versionedAction.extend({ type: z.literal('resume') }),

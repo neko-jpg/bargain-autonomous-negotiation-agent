@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   BuyerPolicy,
   Listing,
@@ -30,21 +30,27 @@ export interface SessionEvent {
 }
 
 type SessionListener = (event: SessionEvent) => void;
+interface SessionSubscription {
+  listener: SessionListener;
+  viewer?: { actorId: string; role: 'buyer' | 'seller' };
+}
 
 interface BargainGlobalState {
   sessions?: Map<string, NegotiationSession>;
   events?: Map<string, SessionEvent[]>;
-  listeners?: Map<string, Set<SessionListener>>;
-  idempotency?: Map<string, { sessionId: string; version: number; response: PublicNegotiationSession }>;
+  listeners?: Map<string, Set<SessionSubscription>>;
+  idempotency?: Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }>;
+  locks?: Map<string, Promise<void>>;
 }
 
 const globalState = globalThis as typeof globalThis & { __bargain?: BargainGlobalState };
 const state = (globalState.__bargain ??= {});
 const sessions: Map<string, NegotiationSession> = (state.sessions ??= new Map<string, NegotiationSession>());
 const events: Map<string, SessionEvent[]> = (state.events ??= new Map<string, SessionEvent[]>());
-const listeners: Map<string, Set<SessionListener>> = (state.listeners ??= new Map<string, Set<SessionListener>>());
-const idempotency: Map<string, { sessionId: string; version: number; response: PublicNegotiationSession }> =
-  (state.idempotency ??= new Map<string, { sessionId: string; version: number; response: PublicNegotiationSession }>());
+const listeners: Map<string, Set<SessionSubscription>> = (state.listeners ??= new Map<string, Set<SessionSubscription>>());
+const idempotency: Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }> =
+  (state.idempotency ??= new Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }>());
+const locks: Map<string, Promise<void>> = (state.locks ??= new Map<string, Promise<void>>());
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -59,7 +65,8 @@ export function findListing(listingId: string): Listing | undefined {
 export function createNegotiationSession(
   listing: Listing,
   buyerPolicy?: BuyerPolicy,
-  buyerTerms?: Partial<NegotiationTerms>
+  buyerTerms?: Partial<NegotiationTerms>,
+  owners?: { buyerId?: string; sellerId?: string }
 ): NegotiationSession {
   const now = new Date().toISOString();
   const isDemo = listing.id === DEMO_CATALOG_ID;
@@ -105,6 +112,8 @@ export function createNegotiationSession(
     id: `neg-${randomUUID()}`,
     threadId: `thread-${randomUUID()}`,
     version: 0,
+    buyerId: owners?.buyerId ?? 'buyer-local',
+    sellerId: owners?.sellerId ?? `seller:${listing.sellerName}`,
     listing: clone({ ...listing, images: listing.images ?? [listing.imageUrl] }),
     buyerPolicy: { ...buyer },
     sellerPolicy: seller,
@@ -173,24 +182,78 @@ export function getPublicSession(sessionId: string): PublicNegotiationSession | 
 }
 
 export function toPublicSession(session: NegotiationSession): PublicNegotiationSession {
+  const {
+    targetPrice: _targetPrice,
+    maxPrice: _maxPrice,
+    autoApprovalMaxPrice: _autoApprovalMaxPrice,
+    ...publicBuyerPolicy
+  } = session.buyerPolicy;
   return {
     id: session.id,
     threadId: session.threadId ?? `thread-${session.id}`,
     version: session.version ?? 0,
     listing: clone(session.listing),
-    buyerPolicy: clone(session.buyerPolicy),
-    offers: clone(session.offers),
+    buyerPolicy: clone(publicBuyerPolicy),
+    offers: session.offers.map((offer) => toOfferView(offer)),
     currentTurn: session.currentTurn,
     currentOfferPrice: session.currentOfferPrice,
     status: session.status,
     waitingUntilHours: session.waitingUntilHours,
     waitingUntilAt: session.waitingUntilAt,
     simulationStep: session.simulationStep,
-    agentMemory: clone(session.agentMemory),
-    dealSummary: clone(session.dealSummary),
+    dealSummary: session.dealSummary ? publicDealSummary(session.dealSummary) : undefined,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
+}
+
+/**
+ * Returns a session view for an authenticated owner. Counterparty reasoning
+ * and private policy values are only included for the matching party.
+ */
+export function toViewerSession(session: NegotiationSession, actorId: string, role: 'buyer' | 'seller'): PublicNegotiationSession {
+  if ((role === 'buyer' && session.buyerId !== actorId) || (role === 'seller' && session.sellerId !== actorId)) {
+    throw new Error('SESSION_FORBIDDEN');
+  }
+  return {
+    ...toPublicSession(session),
+    offers: session.offers.map((offer) => toOfferView(offer, role)),
+    viewer: {
+      actorId,
+      role,
+      policy: clone(role === 'buyer' ? session.buyerPolicy : session.sellerPolicy),
+      agentMemory: clone(session.agentMemory),
+    },
+    viewerDealSummary: role === 'seller' && session.dealSummary ? clone(session.dealSummary) : undefined,
+  };
+}
+
+function toOfferView(offer: NegotiationOffer, viewerRole?: 'buyer' | 'seller') {
+  const publicOffer = {
+    id: offer.id,
+    version: offer.version,
+    proposalHash: offer.proposalHash,
+    targetOfferId: offer.targetOfferId,
+    targetOfferVersion: offer.targetOfferVersion,
+    round: offer.round,
+    timestamp: offer.timestamp,
+    senderRole: offer.senderRole,
+    senderName: offer.senderName,
+    price: offer.price,
+    terms: clone(offer.terms),
+    actionType: offer.actionType,
+    waitTimeHours: offer.waitTimeHours,
+    messageText: offer.messageText,
+  };
+  const senderRole = offer.senderRole.startsWith('buyer') ? 'buyer' : 'seller';
+  return viewerRole && viewerRole === senderRole
+    ? { ...publicOffer, reasoning: clone(offer.reasoning), decision: clone(offer.decision), alternatives: clone(offer.alternatives) }
+    : publicOffer;
+}
+
+function publicDealSummary(summary: NonNullable<NegotiationSession['dealSummary']>) {
+  const { sellerSurplus: _sellerSurplus, ...safe } = summary;
+  return clone(safe);
 }
 
 export function commitSession(
@@ -218,26 +281,43 @@ export function rememberIdempotentAction(
   key: string,
   sessionId: string,
   version: number,
-  response: PublicNegotiationSession
+  response: PublicNegotiationSession,
+  requestHash = ''
 ) {
-  idempotency.set(key, { sessionId, version, response: clone(response) });
+  idempotency.set(`${sessionId}:${key}`, { sessionId, version, requestHash, response: clone(response) });
 }
 
-export function getIdempotentAction(key: string) {
-  const item = idempotency.get(key);
+export function getIdempotentAction(sessionId: string, key: string) {
+  const item = idempotency.get(`${sessionId}:${key}`);
   return item ? clone(item) : undefined;
+}
+
+/** Serialize session mutations so two concurrent requests cannot both pass the version check. */
+export async function withSessionLock<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+  const previous = locks.get(sessionId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  locks.set(sessionId, current);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+    if (locks.get(sessionId) === current) locks.delete(sessionId);
+  }
 }
 
 export function listSessionEvents(sessionId: string): SessionEvent[] {
   return clone(events.get(sessionId) ?? []);
 }
 
-export function subscribeSession(sessionId: string, listener: SessionListener) {
-  const bucket = listeners.get(sessionId) ?? new Set<SessionListener>();
-  bucket.add(listener);
+export function subscribeSession(sessionId: string, listener: SessionListener, viewer?: { actorId: string; role: 'buyer' | 'seller' }) {
+  const subscription: SessionSubscription = { listener, viewer };
+  const bucket = listeners.get(sessionId) ?? new Set<SessionSubscription>();
+  bucket.add(subscription);
   listeners.set(sessionId, bucket);
   return () => {
-    bucket.delete(listener);
+    bucket.delete(subscription);
     if (bucket.size === 0) listeners.delete(sessionId);
   };
 }
@@ -252,7 +332,12 @@ function publish(session: NegotiationSession, type: SessionEvent['type']) {
   };
   bucket.push(event);
   events.set(session.id, bucket.slice(-100));
-  listeners.get(session.id)?.forEach((listener) => listener(clone(event)));
+  listeners.get(session.id)?.forEach((subscription) => {
+    const nextEvent = subscription.viewer
+      ? { ...event, session: toViewerSession(session, subscription.viewer.actorId, subscription.viewer.role) }
+      : event;
+    subscription.listener(clone(nextEvent));
+  });
 }
 
 export function makeOffer(
@@ -262,10 +347,14 @@ export function makeOffer(
   senderName: string,
   messageText: string,
   actionType: NegotiationOffer['actionType'] = 'counter_offer',
-  terms?: NegotiationTerms
+  terms?: NegotiationTerms,
+  options?: Pick<NegotiationOffer, 'targetOfferId' | 'targetOfferVersion'>
 ): NegotiationSession {
   const offer: NegotiationOffer = {
     id: `offer-${randomUUID()}`,
+    version: 1,
+    targetOfferId: options?.targetOfferId,
+    targetOfferVersion: options?.targetOfferVersion,
     round: session.offers.length + 1,
     timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
     senderRole,
@@ -275,10 +364,22 @@ export function makeOffer(
     actionType,
     messageText,
   };
+  offer.proposalHash = hashOffer(offer);
   return {
     ...session,
     offers: [...session.offers, offer],
     currentOfferPrice: price,
     currentTurn: session.currentTurn === 'buyer' ? 'seller' : 'buyer',
   };
+}
+
+export function hashOffer(offer: Pick<NegotiationOffer, 'price' | 'terms' | 'actionType' | 'messageText' | 'targetOfferId' | 'targetOfferVersion'>) {
+  return createHash('sha256').update(JSON.stringify({
+    price: offer.price,
+    terms: offer.terms,
+    actionType: offer.actionType,
+    messageText: offer.messageText,
+    targetOfferId: offer.targetOfferId,
+    targetOfferVersion: offer.targetOfferVersion,
+  })).digest('hex');
 }

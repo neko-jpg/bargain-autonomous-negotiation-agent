@@ -30,12 +30,15 @@ export function NegotiationLiveView({ session, onUpdateSession, onGoToDetail, on
   const latestActionableOffer = actionableOffers.at(-1);
   const currentPrice = latestActionableOffer?.price ?? session.listing.price;
   const latestReasoning = [...session.offers].reverse().find((offer) => offer.reasoning)?.reasoning;
+  const viewerBuyerPolicy = session.viewer?.role === 'buyer' ? session.viewer.policy : undefined;
+  const buyerMaxPrice = viewerBuyerPolicy && 'maxPrice' in viewerBuyerPolicy ? viewerBuyerPolicy.maxPrice : undefined;
+  const buyerTargetPrice = viewerBuyerPolicy?.targetPrice;
   const isFinished = session.status === 'deal' || session.status === 'rejected';
   const lastOfferFromSeller = latestActionableOffer?.senderRole.includes('seller') ?? false;
   const canAccept = session.status === 'paused_for_human'
     && latestOffer?.actionType === 'ask_user'
     && !isFinished
-    && (session.currentTurn !== 'buyer' || currentPrice <= session.buyerPolicy.maxPrice);
+    && (session.currentTurn !== 'buyer' || buyerMaxPrice === undefined || currentPrice <= buyerMaxPrice);
 
   useEffect(() => {
     if (session.status !== 'waiting' || !session.waitingUntilAt) {
@@ -145,15 +148,15 @@ export function NegotiationLiveView({ session, onUpdateSession, onGoToDetail, on
             </div>
 
             <div className="mt-7 grid gap-3 sm:grid-cols-3">
-              <Metric label="あなたの目標" value={yen(session.buyerPolicy.targetPrice)} />
-              <Metric label="あなたの上限" value={yen(session.buyerPolicy.maxPrice)} hint="非公開" />
+              <Metric label="あなたの目標" value={buyerTargetPrice === undefined ? '非公開' : yen(buyerTargetPrice)} hint={buyerTargetPrice === undefined ? '当事者のみ表示' : undefined} />
+              <Metric label="あなたの上限" value={buyerMaxPrice === undefined ? '非公開' : yen(buyerMaxPrice)} hint="サーバー内でのみ検証" />
               <Metric label="相場中央値" value={yen(session.listing.marketMedianPrice)} hint={`${session.listing.daysListed}日経過`} />
             </div>
 
             <div className="mt-7 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-5">
               <AriaButton onPress={() => void callAction('auto_step')} isDisabled={isBusy || isFinished || session.status !== 'active'} isPending={isBusy} className="primary-button box-neo-slant negotiation-primary-action min-w-36">{isBusy ? <RotateCcw className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" aria-hidden="true" />}次の一手を実行</AriaButton>
               <AriaButton onPress={() => setIsAutoPlaying((value) => !value)} isDisabled={isFinished || session.status !== 'active'} className="secondary-button negotiation-control">{isAutoPlaying ? <><Pause className="h-4 w-4" aria-hidden="true" />自動実行を停止</> : <><Play className="h-4 w-4" aria-hidden="true" />自動実行</>}</AriaButton>
-              {canAccept && <AriaButton onPress={() => void callAction('human_accept')} isDisabled={isBusy} className="primary-button negotiation-control"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />この条件で承認</AriaButton>}
+              {canAccept && latestOffer?.targetOfferId && <AriaButton onPress={() => void callAction('human_accept', { targetOfferId: latestOffer.targetOfferId, targetOfferVersion: latestOffer.targetOfferVersion })} isDisabled={isBusy} className="primary-button negotiation-control"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />この条件で承認</AriaButton>}
               {session.status === 'paused_for_human' ? <AriaButton onPress={() => void callAction('resume')} isDisabled={isBusy} className="secondary-button negotiation-control"><Play className="h-4 w-4" aria-hidden="true" />再開</AriaButton> : <AriaButton onPress={() => void callAction('pause')} isDisabled={isBusy || isFinished} className="secondary-button negotiation-control"><Pause className="h-4 w-4" aria-hidden="true" />一時停止</AriaButton>}
               <AriaButton onPress={() => void callAction('stop')} isDisabled={isBusy || isFinished} className="danger-button negotiation-control negotiation-control--danger"><Square className="h-4 w-4" aria-hidden="true" />交渉を終了</AriaButton>
             </div>
@@ -174,7 +177,7 @@ export function NegotiationLiveView({ session, onUpdateSession, onGoToDetail, on
 
         <aside className="space-y-6">
           <section className="negotiation-panel box-neo-slant box-neo-slant--mint rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="eyebrow">NEXT ACTION</p><h2 className="mt-2 text-lg font-bold text-slate-950">{session.status === 'waiting' ? '市場の変化を待っています' : session.status === 'deal' ? '購入手続きへ進めます' : session.currentTurn === 'buyer' ? '買い手側の判断です' : '売り手側の応答を待っています'}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{session.status === 'waiting' ? '待機後に市場データを再取得し、次の提案を作成します。' : session.status === 'deal' ? '合意内容を確認して取引を完了します。' : '上限価格と市場の状況を守りながら、次の一手を実行できます。'}</p><div className="negotiation-verification mt-5 flex items-center gap-3 rounded-xl bg-teal-50 p-3 text-sm text-teal-900"><CheckCircle2 className="h-5 w-5 text-teal-700" aria-hidden="true" />非公開条件をサーバーで検証済み</div></section>
-          <section className="negotiation-panel box-neo-slant box-neo-slant--rose rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="eyebrow">ESTIMATE</p><h2 className="mt-2 text-lg font-bold text-slate-950">成約見込み</h2></div><TrendingDown className="h-5 w-5 text-teal-700" aria-hidden="true" /></div><p className="mt-5 text-3xl font-extrabold text-slate-950 tabular-nums">{latestReasoning ? `${latestReasoning.winProbability}%` : '—'}</p><p className="mt-1 text-sm text-slate-500">直近のエージェント評価</p><div className="negotiation-progress mt-5 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-700 transition-all" style={{ width: `${latestReasoning?.winProbability ?? 0}%` }} /></div><p className="mt-3 text-xs leading-5 text-slate-500">推定値であり、結果を保証するものではありません。</p></section>
+          <section className="negotiation-panel box-neo-slant box-neo-slant--rose rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between"><div><p className="eyebrow">ESTIMATE</p><h2 className="mt-2 text-lg font-bold text-slate-950">受諾スコア</h2></div><TrendingDown className="h-5 w-5 text-teal-700" aria-hidden="true" /></div><p className="mt-5 text-3xl font-extrabold text-slate-950 tabular-nums">{latestReasoning ? `${latestReasoning.acceptanceScore}%` : '—'}</p><p className="mt-1 text-sm text-slate-500">決定論的ヒューリスティック評価</p><div className="negotiation-progress mt-5 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-teal-700 transition-all" style={{ width: `${latestReasoning?.acceptanceScore ?? 0}%` }} /></div><p className="mt-3 text-xs leading-5 text-slate-500">校正済みの確率ではなく、相対的な判断スコアです。</p></section>
           <section className="negotiation-panel box-neo-slant box-neo-slant--surface rounded-2xl border border-slate-200 bg-slate-50 p-5"><div className="flex items-start gap-3"><Info className="mt-0.5 h-5 w-5 shrink-0 text-slate-500" aria-hidden="true" /><div><h2 className="text-sm font-bold text-slate-900">透明性のルール</h2><ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600"><li>・相場や競合情報を偽装しません</li><li>・非公開の上限価格を相手へ送りません</li><li>・いつでも一時停止・終了できます</li></ul></div></div><AriaButton onPress={onGoToDetail} className="mt-4 inline-flex min-h-10 items-center gap-2 text-sm font-semibold text-teal-800 hover:text-teal-950">判断ログを詳しく見る<ExternalLink className="h-4 w-4" aria-hidden="true" /></AriaButton></section>
         </aside>
       </div>

@@ -57,18 +57,7 @@ export class NegotiationGuardrails {
         addCorrection('出品価格を超えないように補正しました。');
       }
 
-      // 3. 相手の提示額が自身の許容上限以下である場合、相手提示額と同等以上を要求されたらACCEPTを検討
-      if (lastOpponentOffer && lastOpponentOffer.price <= reservationPrice) {
-        if (plannedAction === 'make_offer' || plannedAction === 'counter_offer') {
-          if (sanitizedPrice >= lastOpponentOffer.price) {
-            sanitizedAction = 'accept_offer';
-            sanitizedPrice = lastOpponentOffer.price;
-            addCorrection(`相手提示額(¥${lastOpponentOffer.price.toLocaleString()})が上限以内のため合意へ遷移しました。`);
-          }
-        }
-      }
-
-      // 4. 買い手自身の過去提示額より下がる逆行提示の防止
+      // 買い手自身の過去提示額より下がる逆行提示の防止
       if (lastOwnOffer && sanitizedPrice < lastOwnOffer.price && (sanitizedAction === 'make_offer' || sanitizedAction === 'counter_offer')) {
         sanitizedPrice = lastOwnOffer.price;
         addCorrection(`前回の自己提示額(¥${lastOwnOffer.price.toLocaleString()})より低くならないよう補正しました。`);
@@ -81,18 +70,7 @@ export class NegotiationGuardrails {
         addCorrection(`最低許容価格(¥${reservationPrice.toLocaleString()})を下回ったため最低額に補正しました。`);
       }
 
-      // 2. 相手（買い手）の提示額が自身の最低許容価格以上である場合
-      if (lastOpponentOffer && lastOpponentOffer.price >= reservationPrice) {
-        if (plannedAction === 'make_offer' || plannedAction === 'counter_offer') {
-          if (sanitizedPrice <= lastOpponentOffer.price) {
-            sanitizedAction = 'accept_offer';
-            sanitizedPrice = lastOpponentOffer.price;
-            addCorrection(`相手提示額(¥${lastOpponentOffer.price.toLocaleString()})が最低許容価格以上のため合意へ遷移しました。`);
-          }
-        }
-      }
-
-      // 3. 売り手自身の過去提示額より上がる逆行提示の防止
+      // 売り手自身の過去提示額より上がる逆行提示の防止
       if (lastOwnOffer && sanitizedPrice > lastOwnOffer.price && (sanitizedAction === 'make_offer' || sanitizedAction === 'counter_offer')) {
         sanitizedPrice = lastOwnOffer.price;
         addCorrection(`前回の自己提示額(¥${lastOwnOffer.price.toLocaleString()})より高くならないよう補正しました。`);
