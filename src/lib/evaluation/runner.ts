@@ -217,7 +217,7 @@ async function runScenario(scenario: EvaluationScenarioDefinition): Promise<Eval
           marketMedian: listing.marketMedianPrice,
           daysListed: listing.daysListed,
           demandTrend: listing.recentDemand,
-          winProbability: 99,
+          acceptanceScore: 99,
           factors: ['private state should never cross the boundary'],
         },
       };

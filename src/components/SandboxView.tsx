@@ -28,6 +28,8 @@ export const SandboxView: React.FC<SandboxViewProps> = ({ onStartCustomSession }
   const handleStart = () => {
     const session: NegotiationSession = {
       id: `sandbox-${Date.now()}`,
+      buyerId: 'buyer-local',
+      sellerId: `seller:${selectedListing.sellerName}`,
       listing: { ...selectedListing },
       buyerPolicy: {
         targetPrice: buyerTarget,

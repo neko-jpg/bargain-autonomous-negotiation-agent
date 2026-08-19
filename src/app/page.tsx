@@ -191,16 +191,16 @@ export default function Home() {
       });
       const offerPayload = await offerResponse.json();
       if (!offerResponse.ok) throw new Error(offerPayload.message ?? '購入確認を作成できませんでした。');
-      const accepted = await fetch(`/api/negotiations/${created.id}/actions`, {
+      const nextStep = await fetch(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'human_accept', expectedVersion: offerPayload.session.version, idempotencyKey: `${created.id}-buy-accept` }),
+        body: JSON.stringify({ type: 'auto_step', expectedVersion: offerPayload.session.version, idempotencyKey: `${created.id}-buy-response` }),
       });
-      const acceptedPayload = await accepted.json();
-      if (!accepted.ok) throw new Error(acceptedPayload.message ?? '購入確認を完了できませんでした。');
-      persistSession(acceptedPayload.session);
-      navigate('deal-summary');
-      toast.success('購入確認を作成しました。');
+      const nextPayload = await nextStep.json();
+      if (!nextStep.ok) throw new Error(nextPayload.message ?? '売り手側の応答を取得できませんでした。');
+      persistSession(nextPayload.session);
+      navigate(nextPayload.session.status === 'deal' ? 'deal-summary' : 'negotiation-live');
+      toast.success(nextPayload.session.status === 'deal' ? '購入確認を完了しました。' : '購入オファーを送信しました。');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '購入確認を作成できませんでした。');
     }
@@ -306,7 +306,7 @@ export default function Home() {
               {activeScreen === 'negotiation-detail' && <NegotiationDetailView session={session} onBackToLive={() => navigate('negotiation-live')} />}
               {activeScreen === 'seller-dashboard' && sellerListing && <SellerDashboardView listing={sellerListing} session={sellerSession} onRerollListing={() => pickSellerListing(sellerListing.id)} onOpenListing={handleOpenSellerListing} onOpenNegotiation={handleOpenSellerNegotiation} />}
               {activeScreen === 'dashboard' && <DashboardView session={session} onSelectNegotiation={() => navigate('negotiation-live')} />}
-              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.buyerPolicy.maxPrice} negotiationId={session.id} onGoToDetail={() => navigate('negotiation-detail')} />}
+              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.viewer?.role === 'buyer' && 'maxPrice' in session.viewer.policy ? session.viewer.policy.maxPrice : undefined} sellerSurplus={session.viewerDealSummary?.sellerSurplus} negotiationId={session.id} onGoToDetail={() => navigate('negotiation-detail')} />}
             </motion.div>
           </AnimatePresence>
         </main>

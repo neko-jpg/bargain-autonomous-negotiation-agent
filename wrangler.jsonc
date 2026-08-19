@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "project-bargain",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-08-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "BARGAIN_ENV": "local",
+    "BARGAIN_ENABLE_DEMO_HEADERS": "false"
+  },
+  "env": {
+    "staging": {
+      "name": "project-bargain-staging",
+      "vars": {
+        "BARGAIN_ENV": "staging",
+        "BARGAIN_ENABLE_DEMO_HEADERS": "false"
+      },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "REPLACE_WITH_STAGING_HYPERDRIVE_ID"
+        }
+      ]
+    },
+    "production": {
+      "name": "project-bargain-production",
+      "vars": {
+        "BARGAIN_ENV": "production",
+        "BARGAIN_ENABLE_DEMO_HEADERS": "false"
+      },
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "REPLACE_WITH_PRODUCTION_HYPERDRIVE_ID"
+        }
+      ]
+    }
+  }
+}

@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { DealSummary, Listing } from '@/types/negotiation';
+import { PublicDealSummary, Listing } from '@/types/negotiation';
 import confetti from 'canvas-confetti';
 import { CheckCircle, MessageSquare, Repeat, ShieldCheck, Sparkles, TrendingDown, TrendingUp, X } from 'lucide-react';
 
 interface DealModalProps {
-  summary: DealSummary;
+  summary: PublicDealSummary;
   listing: Listing;
+  sellerSurplus?: number;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -15,6 +16,7 @@ interface DealModalProps {
 export const DealModal: React.FC<DealModalProps> = ({
   summary,
   listing,
+  sellerSurplus,
   isOpen,
   onClose,
 }) => {
@@ -77,8 +79,8 @@ export const DealModal: React.FC<DealModalProps> = ({
               tone="plum"
               icon={TrendingUp}
               label="売り手の余剰"
-              value={`+¥${summary.sellerSurplus.toLocaleString()}`}
-              hint="最低価格との差"
+              value={sellerSurplus === undefined ? '非公開' : `+¥${sellerSurplus.toLocaleString()}`}
+              hint={sellerSurplus === undefined ? '当事者のみ表示' : '最低価格との差'}
             />
             <DealMetric
               tone="yellow"

@@ -257,6 +257,7 @@ export const SwitchDemoView: React.FC = () => {
         <DealModal
           summary={session.dealSummary}
           listing={session.listing}
+          sellerSurplus={undefined}
           isOpen={isDealModalOpen}
           onClose={() => setIsDealModalOpen(false)}
         />

@@ -9,6 +9,8 @@ export function runSwitchDemoE2ETests(): boolean {
 
   const session: NegotiationSession = {
     id: 'demo-test-1',
+    buyerId: 'buyer-test',
+    sellerId: 'seller-test',
     listing,
     buyerPolicy: { ...DEFAULT_BUYER_POLICY_SWITCH },
     sellerPolicy: { ...DEFAULT_SELLER_POLICY_SWITCH },

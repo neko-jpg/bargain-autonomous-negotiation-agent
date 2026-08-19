@@ -5,20 +5,21 @@ import Image from 'next/image';
 import { Button as AriaButton } from 'react-aria-components';
 import { motion } from 'motion/react';
 import { CheckCircle2, Download, ExternalLink, PackageCheck, ShieldCheck, Star, Truck } from 'lucide-react';
-import { DealSummary, Listing, NegotiationOffer } from '@/types/negotiation';
+import { PublicDealSummary, Listing, NegotiationOfferView } from '@/types/negotiation';
 import { NegotiationEventCard } from '@/components/NegotiationEventCard';
 import { ContractDraftPanel } from '@/components/ContractDraftPanel';
 
 interface DealSummaryViewProps {
-  summary?: DealSummary;
+  summary?: PublicDealSummary;
   listing: Listing;
-  offers?: NegotiationOffer[];
+  offers?: NegotiationOfferView[];
   buyerMaxPrice?: number;
+  sellerSurplus?: number;
   negotiationId: string;
   onGoToDetail: () => void;
 }
 
-export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, negotiationId, onGoToDetail }: DealSummaryViewProps) {
+export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, sellerSurplus, negotiationId, onGoToDetail }: DealSummaryViewProps) {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [submitted, setSubmitted] = useState(false);
@@ -63,7 +64,7 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
         </div>
         <div className="deal-summary-hero__metrics">
           <SummaryMetric tone="yellow" label="買い手の節約" value={`¥${(summary?.buyerSaved ?? 0).toLocaleString()}`} hint={`${summary?.buyerSavedPercent ?? 0}% OFF`} />
-          <SummaryMetric tone="mint" label="売り手の余剰" value={`+¥${(summary?.sellerSurplus ?? 0).toLocaleString()}`} hint="最低価格との差" />
+          <SummaryMetric tone="mint" label="売り手の余剰" value={sellerSurplus === undefined ? '非公開' : `+¥${sellerSurplus.toLocaleString()}`} hint={sellerSurplus === undefined ? '当事者のみ表示' : '最低価格との差'} />
           <SummaryMetric tone="surface" label="アクション" value={`${summary?.totalActions ?? offers.length}回`} hint="全イベント" />
           <SummaryMetric tone="rose" label="人間の介入" value={`${summary?.humanMessagesCount ?? 0}回`} hint="自動交渉" />
         </div>

@@ -6,6 +6,7 @@ import { runPolicyEngineTests } from './unit/policyEngine.test';
 import { runCatalogTests } from './catalog.test';
 import { runEvaluationTests } from './evaluation.test';
 import { runWorkflowStoreTests } from './unit/workflowStore.test';
+import { runActorAuthTests } from './unit/actor.test';
 
 async function main() {
   console.log('====================================================');
@@ -20,9 +21,10 @@ async function main() {
   const t6 = runCatalogTests();
   const t7 = await runEvaluationTests();
   const t8 = await runWorkflowStoreTests();
+  const t9 = runActorAuthTests();
 
   console.log('\n====================================================');
-  if (t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8) {
+  if (t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 && t9) {
     console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (100% PASS RATE)');
     console.log('====================================================\n');
     process.exit(0);

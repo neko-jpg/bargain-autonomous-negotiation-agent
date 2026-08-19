@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isProductionEnvironment } from '@/lib/runtime/environment';
 import { startSwitchDemo, advanceSwitchDemo, SWITCH_SCENARIO_STEPS } from '@/lib/simulation/switchScenario';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
+  if (isProductionEnvironment()) {
+    return NextResponse.json({ error: 'DEMO_DISABLED', message: '本番環境ではスクリプトデモを無効化しています。' }, { status: 404 });
+  }
   return NextResponse.json({ session: startSwitchDemo(), totalSteps: SWITCH_SCENARIO_STEPS.length });
 }
 
 export async function POST(request: NextRequest) {
+  if (isProductionEnvironment()) {
+    return NextResponse.json({ error: 'DEMO_DISABLED', message: '本番環境ではスクリプトデモを無効化しています。' }, { status: 404 });
+  }
   const body = await request.json().catch(() => ({}));
 
   try {
@@ -26,4 +33,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: code, message }, { status: code === 'SESSION_NOT_FOUND' ? 404 : 422 });
   }
 }
-

@@ -128,7 +128,7 @@ export const NegotiationTimeline: React.FC<NegotiationTimelineProps> = ({
                       意思決定の根拠 (Reasoning):
                     </span>
                     <span className="font-mono text-indigo-300 font-medium">
-                      成立予測: {offer.reasoning.winProbability}%
+                      受諾スコア: {offer.reasoning.acceptanceScore}%
                     </span>
                   </div>
 

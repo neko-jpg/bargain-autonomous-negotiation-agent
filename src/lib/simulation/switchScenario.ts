@@ -129,7 +129,7 @@ export function advanceSwitchDemo(sessionId: string, stepIndex: number) {
         marketMedian: listing.marketMedianPrice,
         daysListed: listing.daysListed,
         demandTrend: listing.recentDemand,
-        winProbability: step.action === 'accept_offer' ? 100 : Math.min(96, 60 + index * 6),
+        acceptanceScore: step.action === 'accept_offer' ? 100 : Math.min(96, 60 + index * 6),
         factors: [...step.factors],
       },
       messageText: step.message,

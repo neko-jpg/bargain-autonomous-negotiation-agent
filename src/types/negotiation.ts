@@ -109,7 +109,8 @@ export interface ActionReasoning {
   marketMedian: number;
   daysListed: number;
   demandTrend: string;
-  winProbability: number;
+  /** Heuristic score, not a calibrated probability. */
+  acceptanceScore: number;
   factors: string[];
 }
 
@@ -129,9 +130,30 @@ export interface AgentAlternative {
   rationale: string;
   confidence: number;
   risks: string[];
+  /** Selected proposals use a deterministic public message tied to price/terms. */
+  publicMessage?: string;
+  targetOfferId?: string;
+  targetOfferVersion?: number;
+  waitHours?: number;
+  source?: 'llm' | 'heuristic';
   score?: number;
   policyIssues?: string[];
   isValid?: boolean;
+}
+
+/** Atomic unit passed from planning to execution. */
+export interface ActionProposal {
+  id: string;
+  action: AgentActionType;
+  targetOfferId?: string;
+  targetOfferVersion?: number;
+  price: number;
+  terms: NegotiationTerms;
+  publicMessage: string;
+  internalRationale: string;
+  waitHours?: number;
+  source: 'llm' | 'heuristic';
+  risks: string[];
 }
 
 export interface NegotiationMemory {
@@ -146,6 +168,12 @@ export interface NegotiationMemory {
 
 export interface NegotiationOffer {
   id: string;
+  /** Monotonic version of this offer for compare-and-accept semantics. */
+  version?: number;
+  /** Hash of the immutable public offer payload. */
+  proposalHash?: string;
+  targetOfferId?: string;
+  targetOfferVersion?: number;
   round: number;
   timestamp: string;
   senderRole: 'buyer_agent' | 'seller_agent' | 'buyer_human' | 'seller_human';
@@ -180,10 +208,40 @@ export interface DealSummary {
   completedAt: string;
 }
 
+export type PublicBuyerPolicy = Omit<BuyerPolicy, 'targetPrice' | 'maxPrice' | 'autoApprovalMaxPrice'>;
+export type PublicSellerPolicy = Omit<SellerPolicy, 'minPrice' | 'costPrice' | 'minimumProfit' | 'autoApprovalMinPrice'>;
+export type PublicDealSummary = Omit<DealSummary, 'sellerSurplus'>;
+
+/** The only offer shape safe to expose to an unauthenticated counterparty. */
+export type CounterpartyPublicOffer = Pick<
+  NegotiationOffer,
+  | 'id'
+  | 'version'
+  | 'proposalHash'
+  | 'targetOfferId'
+  | 'targetOfferVersion'
+  | 'round'
+  | 'timestamp'
+  | 'senderRole'
+  | 'senderName'
+  | 'price'
+  | 'terms'
+  | 'actionType'
+  | 'waitTimeHours'
+  | 'messageText'
+>;
+
+export type NegotiationOfferView = CounterpartyPublicOffer & Pick<
+  NegotiationOffer,
+  'reasoning' | 'decision' | 'alternatives'
+>;
+
 export interface NegotiationSession {
   id: string;
   threadId?: string;
   version?: number;
+  buyerId: string;
+  sellerId: string;
   listing: Listing;
   buyerPolicy: BuyerPolicy;
   sellerPolicy: SellerPolicy;
@@ -211,16 +269,24 @@ export interface PublicNegotiationSession {
   threadId: string;
   version: number;
   listing: Listing;
-  buyerPolicy: BuyerPolicy;
-  offers: NegotiationOffer[];
+  /** Non-sensitive buyer settings; reservation prices are never in this field. */
+  buyerPolicy: PublicBuyerPolicy;
+  offers: NegotiationOfferView[];
   currentTurn: 'buyer' | 'seller';
   currentOfferPrice?: number;
   status: NegotiationStatus;
   waitingUntilHours?: number;
   waitingUntilAt?: string;
   simulationStep?: number;
-  agentMemory?: NegotiationMemory;
-  dealSummary?: DealSummary;
+  dealSummary?: PublicDealSummary;
+  /** Present only when the request is authenticated as the owner of this view. */
+  viewer?: {
+    actorId: string;
+    role: 'buyer' | 'seller';
+    policy: BuyerPolicy | SellerPolicy;
+    agentMemory?: NegotiationMemory;
+  };
+  viewerDealSummary?: DealSummary;
   createdAt: string;
   updatedAt: string;
 }
@@ -228,7 +294,7 @@ export interface PublicNegotiationSession {
 // LangGraph State Graph Definition
 export interface GraphAssessment {
   estimatedMarketPrice: number;
-  winProbability: number;
+  acceptanceScore: number;
   riskOfLoss: number;
   batna: number;
   recommendation: AgentActionType;
@@ -246,9 +312,12 @@ export interface NegotiationGraphState {
   latestAssessment?: GraphAssessment;
   plannedAction?: AgentActionType;
   plannedPrice?: number;
+  plannedTargetOfferId?: string;
+  plannedTargetOfferVersion?: number;
   plannedWaitHours?: number;
   plannedTerms?: NegotiationTerms;
   plannedAlternatives?: AgentAlternative[];
+  plannedProposal?: ActionProposal;
   reasoningDetails?: ActionReasoning;
   isDeal: boolean;
   isTerminated: boolean;
@@ -261,13 +330,21 @@ export type ApprovalTaskStatus = 'pending' | 'approved' | 'rejected' | 'expired'
 export interface ApprovalTask {
   id: string;
   negotiationId: string;
+  ownerId: string;
   kind: ApprovalTaskKind;
   status: ApprovalTaskStatus;
   title: string;
   payload: unknown;
+  subjectType: 'offer' | 'contract';
+  subjectId: string;
+  subjectVersion: number;
+  proposalHash: string;
+  requestedBy: string;
+  expiresAt: string;
   version: number;
   createdAt: string;
   resolvedAt?: string;
+  resolvedBy?: string;
 }
 
 export type ContractDraftStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected';

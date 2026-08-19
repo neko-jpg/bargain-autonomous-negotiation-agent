@@ -30,9 +30,11 @@ export class MarketSimulator {
   }
 
   /**
-   * 需要や出品期間から取引成立確率 (Win Probability) を推定する (0% - 100%)
+   * 需要や出品期間から、受諾判断に使う決定論的な相対スコアを算出する (0 - 100)
+   *
+   * 統計的に校正された成約確率ではないため、確率として扱わない。
    */
-  static estimateWinProbability(
+  static estimateAcceptanceScore(
     offerPrice: number,
     marketMedian: number,
     daysListed: number,
@@ -40,36 +42,36 @@ export class MarketSimulator {
     role: 'buyer' | 'seller'
   ): number {
     const priceRatio = offerPrice / marketMedian;
-    let baseProb = 50;
+    let baseScore = 50;
 
     if (role === 'buyer') {
       // 買い手の場合、提示額が高いほど成約しやすい
-      if (priceRatio >= 1.0) baseProb = 85;
-      else if (priceRatio >= 0.95) baseProb = 75;
-      else if (priceRatio >= 0.90) baseProb = 60;
-      else if (priceRatio >= 0.85) baseProb = 40;
-      else baseProb = 20;
+      if (priceRatio >= 1.0) baseScore = 85;
+      else if (priceRatio >= 0.95) baseScore = 75;
+      else if (priceRatio >= 0.90) baseScore = 60;
+      else if (priceRatio >= 0.85) baseScore = 40;
+      else baseScore = 20;
 
       // 出品期間が長いほど、安くても受け入れられやすい
-      if (daysListed > 25) baseProb += 15;
-      else if (daysListed > 10) baseProb += 5;
+      if (daysListed > 25) baseScore += 15;
+      else if (daysListed > 10) baseScore += 5;
 
       // 需要が高いと売り手は強気になるため成約率は下がる
-      if (demand === 'high') baseProb -= 15;
-      else if (demand === 'low') baseProb += 10;
+      if (demand === 'high') baseScore -= 15;
+      else if (demand === 'low') baseScore += 10;
     } else {
       // 売り手の場合、提示額が安いほど成約しやすい
-      if (priceRatio <= 0.90) baseProb = 85;
-      else if (priceRatio <= 0.95) baseProb = 75;
-      else if (priceRatio <= 1.0) baseProb = 60;
-      else if (priceRatio <= 1.05) baseProb = 40;
-      else baseProb = 20;
+      if (priceRatio <= 0.90) baseScore = 85;
+      else if (priceRatio <= 0.95) baseScore = 75;
+      else if (priceRatio <= 1.0) baseScore = 60;
+      else if (priceRatio <= 1.05) baseScore = 40;
+      else baseScore = 20;
 
-      if (demand === 'high') baseProb += 15;
-      else if (demand === 'low') baseProb -= 15;
+      if (demand === 'high') baseScore += 15;
+      else if (demand === 'low') baseScore -= 15;
     }
 
-    return Math.min(95, Math.max(5, baseProb));
+    return Math.min(95, Math.max(5, baseScore));
   }
 
   /**
