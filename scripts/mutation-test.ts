@@ -72,6 +72,10 @@ export const MUTANTS: Mutant[] = [
   { id: 'M15', title: 'Superseded offers can be accepted', edits: [
     { file: 'src/lib/negotiation/service.ts', find: "if (latestPriced?.id !== target.id) throw new NegotiationServiceError('TARGET_OFFER_SUPERSEDED');", replace: '' },
   ] },
+  { id: 'M17', title: 'Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)', edits: [
+    { file: 'src/lib/negotiation/service.ts', find: "if (!isOfferStillBinding(session, target)) throw new NegotiationServiceError('TARGET_OFFER_WITHDRAWN');", replace: '' },
+    { file: 'src/lib/agent/negotiationGraph.ts', find: 'if (targetVersionMatches && isOfferStillBinding(session, target) && ', replace: 'if (targetVersionMatches && ' },
+  ] },
   { id: 'M16', title: 'Operators may approve purchases', edits: [
     { file: 'src/lib/negotiation/service.ts', find: "approve_commit: ['party'],", replace: "approve_commit: ['party', 'operator']," },
     { file: 'src/lib/negotiation/commit.ts', find: 'return requirement.approvers.find((approver) => approver.id === actor.id && approver.role === actor.role);', replace: "return actor.role === 'operator' ? requirement.approvers[0] : requirement.approvers.find((approver) => approver.id === actor.id && approver.role === actor.role);" },
@@ -97,26 +101,53 @@ function applyEdits(directory: string, mutant: Mutant) {
   }
 }
 
+function prepareCopy(base: string, label: string) {
+  const directory = mkdtempSync(join(base, `bargain-${label}-`));
+  for (const entry of ['src', 'test', 'docs', 'examples', 'tsconfig.json', 'package.json']) cpSync(join(ROOT, entry), join(directory, entry), { recursive: true });
+  symlinkSync(join(ROOT, 'node_modules'), join(directory, 'node_modules'), 'dir');
+  return directory;
+}
+
+function runQuickSuite(directory: string) {
+  const run = spawnSync(process.execPath, [join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'test/safety/quick.ts'], {
+    cwd: directory,
+    encoding: 'utf8',
+    env: { ...process.env, SAFETY_FUZZ_SESSIONS: '150', SAFETY_EXPLORER_DEPTH: '2' },
+    timeout: 300_000,
+  });
+  const output = `${run.stdout}\n${run.stderr}`;
+  const failures = Array.from(new Set(output.split('\n').filter((line) => line.includes('[FAIL]')).map((line) => line.replace(/^.*\[FAIL\]\s*/, '').split(' — ')[0])));
+  return { passed: run.status === 0, failures, output };
+}
+
 export function runMutationTests(selected = MUTANTS): MutantResult[] {
   const base = process.env.MUTATION_TMPDIR ?? tmpdir();
+  // Control run: the unmodified copy must pass, otherwise "killed" would mean nothing.
+  const control = prepareCopy(base, 'control');
+  try {
+    const result = runQuickSuite(control);
+    if (!result.passed) {
+      console.error(result.output.split('\n').slice(-30).join('\n'));
+      throw new Error('Mutation testing aborted: the unmodified copy does not pass the suite.');
+    }
+    console.log('✅ control copy passes the suite');
+  } finally {
+    rmSync(control, { recursive: true, force: true });
+  }
+
   const results: MutantResult[] = [];
   for (const mutant of selected) {
-    const directory = mkdtempSync(join(base, `bargain-${mutant.id}-`));
+    const directory = prepareCopy(base, mutant.id);
     try {
-      for (const entry of ['src', 'test', 'docs', 'tsconfig.json', 'package.json']) cpSync(join(ROOT, entry), join(directory, entry), { recursive: true });
-      symlinkSync(join(ROOT, 'node_modules'), join(directory, 'node_modules'), 'dir');
       applyEdits(directory, mutant);
-      const run = spawnSync(process.execPath, [join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'test/safety/quick.ts'], {
-        cwd: directory,
-        encoding: 'utf8',
-        env: { ...process.env, SAFETY_FUZZ_SESSIONS: '150', SAFETY_EXPLORER_DEPTH: '2' },
-        timeout: 300_000,
-      });
-      const output = `${run.stdout}\n${run.stderr}`;
-      const caughtBy = Array.from(new Set(output.split('\n').filter((line) => line.includes('[FAIL]')).map((line) => line.replace(/^.*\[FAIL\]\s*/, '').split(' — ')[0])));
-      const killed = run.status !== 0;
-      results.push({ id: mutant.id, title: mutant.title, killed, caughtBy: killed && caughtBy.length === 0 ? ['suite crashed'] : caughtBy });
-      console.log(`${killed ? '💀 killed  ' : '🧟 SURVIVED'} ${mutant.id} ${mutant.title}${killed ? ` ← ${(caughtBy[0] ?? 'crash')}` : ''}`);
+      const result = runQuickSuite(directory);
+      const killed = !result.passed;
+      // A kill must come from a failing check, not from a crash or type error.
+      const caughtBy = result.failures;
+      const validKill = killed && caughtBy.length > 0;
+      results.push({ id: mutant.id, title: mutant.title, killed: validKill, caughtBy: validKill ? caughtBy : ['(no failing check: crashed)'] });
+      console.log(`${validKill ? '💀 killed  ' : '🧟 SURVIVED'} ${mutant.id} ${mutant.title}${validKill ? ` ← ${caughtBy[0]}` : ''}`);
+      if (killed && !validKill) console.error(result.output.split('\n').slice(-15).join('\n'));
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

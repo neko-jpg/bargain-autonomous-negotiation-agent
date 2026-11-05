@@ -16,6 +16,7 @@ import { runAttackSuite } from '../test/safety/attacks.test';
 import { runDatabaseSuite } from '../test/safety/db.test';
 import { runFuzz } from '../test/safety/fuzz.test';
 import { runExplorer } from '../test/safety/explorer.test';
+import { runReuseCheck } from '../test/safety/quick';
 import { runMutationTests, MutantResult } from './mutation-test';
 import { runEvaluationSuite } from '../src/lib/evaluation/runner';
 import { INVARIANTS } from '../src/lib/negotiation/invariants';
@@ -42,6 +43,7 @@ async function main() {
   const [postgres, attacksPostgres] = await runDatabaseSuite();
   const fuzz = await runFuzz({ seed: fuzzSeed, sessions: fuzzSessions, steps: 25 });
   const explorer = await runExplorer(explorerDepth);
+  const reuse = await runReuseCheck();
   const evaluation = await runEvaluationSuite();
   let mutants: MutantResult[] = [];
   if (!process.env.SAFETY_SKIP_MUTATION) {
@@ -49,7 +51,7 @@ async function main() {
     mutants = runMutationTests();
   }
 
-  const checks: CheckResult[] = [architecture, attacksMemory, postgres, attacksPostgres, fuzz.check, explorer.check].flatMap((checker) => checker.results);
+  const checks: CheckResult[] = [architecture, attacksMemory, postgres, attacksPostgres, fuzz.check, explorer.check, reuse].flatMap((checker) => checker.results);
   const allPassed = checks.every((check) => check.passed)
     && mutants.every((mutant) => mutant.killed)
     && evaluation.metrics.passedCount === evaluation.metrics.scenarioCount;
@@ -81,6 +83,7 @@ async function main() {
 | Bounded exhaustive exploration | all ${explorer.metrics.sequences.toLocaleString()} sequences of ${explorerDepth} moves (${explorer.metrics.alphabet}-move alphabet × ${explorer.metrics.startStates} start states), ${explorer.metrics.transitions.toLocaleString()} transitions, **${explorer.metrics.violations.length} violations** |
 | Mutation testing | ${mutants.length ? `${killed}/${mutants.length} injected safety bugs detected` : 'skipped'} |
 | Architecture fitness tests | ${architecture.results.filter((r) => r.passed).length}/${architecture.results.length} pass |
+| Reuse in a second domain (\`npm run example:reuse\`) | ${mark(reuse.passed)} — cloud deletions gated by the same code |
 | Negotiation evaluation scenarios | ${evaluation.metrics.passedCount}/${evaluation.metrics.scenarioCount} pass |
 
 ## Same model, with and without the gate

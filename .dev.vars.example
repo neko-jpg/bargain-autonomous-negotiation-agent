@@ -13,3 +13,14 @@ BARGAIN_SESSION_SECRET=replace_with_another_long_random_secret
 BARGAIN_LLM_PROVIDER=google
 GOOGLE_API_KEY=replace_with_provider_key
 BARGAIN_GOOGLE_MODEL=gemini-3.6-flash
+
+# --- Commit Gate (irreversible purchase) ---
+# Optional separate secret for signed approval grants (32+ chars). Falls back to BARGAIN_SESSION_SECRET.
+BARGAIN_GRANT_SECRET=replace_with_a_third_long_random_secret
+# Operator token: kill switch, stop, reject (operators can halt, never spend).
+BARGAIN_OPERATOR_TOKEN=replace_with_operator_token
+# Set to "engaged" to halt all agent steps and purchases at deploy time.
+BARGAIN_KILL_SWITCH=released
+# Optional: send approved purchases to a real order system (HMAC-signed, Idempotency-Key = intent hash).
+# BARGAIN_EFFECT_WEBHOOK_URL=https://orders.example.com/bargain
+# BARGAIN_EFFECT_WEBHOOK_SECRET=replace_with_webhook_signing_secret

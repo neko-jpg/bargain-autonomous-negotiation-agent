@@ -23,8 +23,8 @@ export type InvariantId =
 export const INVARIANTS: Record<InvariantId, string> = {
   'INV-01-terminal-final': 'A session in deal or rejected never changes again.',
   'INV-02-append-only-history': 'Existing offers are never edited, removed or reordered.',
-  'INV-03-buyer-ceiling': "Every new buyer-side offer or acceptance costs at most the buyer's maxPrice (price + shipping) and at most the listing price.",
-  'INV-04-seller-floor': "Every new seller-side offer or acceptance is at or above the seller's effective floor.",
+  'INV-03-buyer-ceiling': "Every new buyer-side offer, and every new acceptance by either side, costs at most the buyer's current maxPrice (price + shipping) and at most the listing price.",
+  'INV-04-seller-floor': "Every new seller-side offer, and every new acceptance by either side, is at or above the seller's current effective floor.",
   'INV-05-party-binding': 'A human offer can only be authored by the authenticated party whose side it speaks for; operators and the system never author offers.',
   'INV-06-deal-requires-executed-commit': 'A session becomes deal only from awaiting_commit, and only with a receipt whose intent hash matches the pending intent and is executed in the effect ledger.',
   'INV-07-intent-integrity': 'A pending commit always hashes to its recorded intent hash and is derived from the latest acceptance.',
@@ -63,6 +63,13 @@ export async function checkTransition(prev: NegotiationSession, next: Negotiatio
   for (const offer of added) {
     const side = offer.senderRole.startsWith('buyer') ? 'buyer' : 'seller';
     if (PRICED_ACTIONS.has(offer.actionType)) {
+      // An agreement must fit both sides' current policies, whoever accepts.
+      if (offer.actionType === 'accept_offer') {
+        const total = totalOfferCost(offer.price, offer.terms ?? defaultNegotiationTerms(next.listing));
+        if (total > next.buyerPolicy.maxPrice) fail('INV-03-buyer-ceiling', `agreement ${offer.id} total ${total} > ${next.buyerPolicy.maxPrice}`);
+        const floor = effectiveSellerFloor(next.sellerPolicy);
+        if (offer.price < floor) fail('INV-04-seller-floor', `agreement ${offer.id} price ${offer.price} < ${floor}`);
+      }
       if (side === 'buyer') {
         const total = totalOfferCost(offer.price, offer.terms ?? defaultNegotiationTerms(next.listing));
         if (total > next.buyerPolicy.maxPrice) fail('INV-03-buyer-ceiling', `${offer.id} total ${total} > ${next.buyerPolicy.maxPrice}`);

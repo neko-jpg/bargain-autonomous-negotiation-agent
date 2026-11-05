@@ -10,7 +10,7 @@ import {
 } from '@/lib/negotiation/sessionStore';
 import { NegotiationActionRequest } from '@/lib/negotiation/schemas';
 import { NegotiationOffer, NegotiationSession, PublicNegotiationSession } from '@/types/negotiation';
-import { effectiveSellerFloor, sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
+import { effectiveSellerFloor, isOfferStillBinding, sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
 import {
   commitPersistedSession,
   getPersistedIdempotentAction,
@@ -195,6 +195,7 @@ function assertAcceptableTarget(
   const latestPriced = [...session.offers].reverse().find((offer) => PRICED_ACTIONS.has(offer.actionType));
   if (latestPriced?.id !== target.id) throw new NegotiationServiceError('TARGET_OFFER_SUPERSEDED');
   if (targetOfferVersion !== undefined && targetOfferVersion !== (target.version ?? 1)) throw new NegotiationServiceError('TARGET_OFFER_VERSION_CONFLICT');
+  if (!isOfferStillBinding(session, target)) throw new NegotiationServiceError('TARGET_OFFER_WITHDRAWN');
   if (target.terms?.expiresAt) {
     const expiry = Date.parse(target.terms.expiresAt);
     if (Number.isFinite(expiry) && expiry <= Date.now()) throw new NegotiationServiceError('TARGET_OFFER_EXPIRED');
@@ -418,6 +419,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   TARGET_OFFER_SUPERSEDED: 'より新しい提案があるため、このオファーは受諾できません。',
   TARGET_OFFER_VERSION_CONFLICT: '対象オファーが更新されています。再読み込みしてください。',
   TARGET_OFFER_EXPIRED: '対象オファーの有効期限が切れています。',
+  TARGET_OFFER_WITHDRAWN: '提示者のポリシー変更により、このオファーは取り下げられています。',
   OFFER_OUT_OF_POLICY: '価格または取引条件が設定したポリシーの範囲外です。',
   SESSION_ALREADY_FINISHED: 'この交渉はすでに終了しています。',
   COMMIT_INTENT_MISMATCH: '購入内容が更新されています。最新の内容を確認してください。',

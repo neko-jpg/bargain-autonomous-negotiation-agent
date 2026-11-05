@@ -41,6 +41,19 @@ export function effectiveSellerFloor(policy: SellerPolicy) {
 }
 
 /**
+ * An offer binds only while it still fits its author's *current* policy. When
+ * the buyer lowers its budget, its older, higher offers are withdrawn: the
+ * counterparty can no longer accept them (found by the fuzzer, see A23).
+ */
+export function isOfferStillBinding(session: { buyerPolicy: BuyerPolicy; sellerPolicy: SellerPolicy; listing: Listing }, offer: { senderRole: string; price: number; terms?: NegotiationTerms }) {
+  if (offer.senderRole.startsWith('buyer')) {
+    const total = totalOfferCost(offer.price, normalizeNegotiationTerms(session.listing, offer.terms));
+    return total <= session.buyerPolicy.maxPrice && offer.price <= session.listing.price;
+  }
+  return offer.price >= effectiveSellerFloor(session.sellerPolicy);
+}
+
+/**
  * Single source of truth for "does the buyer's human have to approve this
  * purchase?". Returns the reason, or undefined when policy pre-authorizes it.
  * The reason mentions private limits, so show it only to the buyer.

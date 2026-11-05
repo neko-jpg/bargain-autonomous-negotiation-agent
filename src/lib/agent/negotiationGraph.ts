@@ -16,7 +16,7 @@ import { MarketSimulator } from '@/lib/engine/marketSimulator';
 import { NegotiationGuardrails } from '@/lib/engine/guardrails';
 import { LLMProviderService } from '@/lib/agent/llmProvider';
 import { defaultNegotiationTerms } from '@/lib/negotiation/terms';
-import { sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
+import { isOfferStillBinding, sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
 import { beginPurchaseCommit } from '@/lib/negotiation/commit';
 import { scoreAgentAlternatives } from '@/lib/agent/strategyScorer';
 import { updateNegotiationMemory } from '@/lib/agent/memory';
@@ -325,7 +325,9 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
     } else {
       const exactTarget = sanitizeOfferByPolicy(currentRole, currentListing, policy, target.price, targetTerms, 'accept_offer');
       const targetVersionMatches = plannedTargetOfferVersion === undefined || plannedTargetOfferVersion === (target.version ?? 1);
-      if (targetVersionMatches && exactTarget.price === target.price && !exactTarget.correctionReason) {
+      // A counterparty offer that no longer fits its author's current policy
+      // (e.g. the buyer lowered its budget) is withdrawn and cannot be accepted.
+      if (targetVersionMatches && isOfferStillBinding(session, target) && exactTarget.price === target.price && !exactTarget.correctionReason) {
         finalPrice = target.price;
         finalTerms = targetTerms;
         policyDecision = exactTarget;

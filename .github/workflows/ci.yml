@@ -32,8 +32,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Run regression tests
+      - name: Run regression and safety tests (memory + PostgreSQL via PGlite)
         run: npm test
+
+      - name: Deep safety verification (fuzz, exhaustive depth 3, mutation testing)
+        run: npm run safety:verify
 
       - name: Audit production dependencies
         run: npm run audit

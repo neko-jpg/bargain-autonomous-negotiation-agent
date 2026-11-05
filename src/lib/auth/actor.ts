@@ -84,9 +84,11 @@ export function getActor(request: Request): ActorContext | undefined {
   const headerIdentity = areDemoHeadersEnabled() ? request.headers.get('x-bargain-user-id')?.trim() : undefined;
   const rawCookie = cookieValue(request, ACTOR_COOKIE);
   const id = rawCookie ? decodeActorCookie(rawCookie) : headerIdentity;
-  if (!id) return undefined;
+  const role = actorRole(request);
+  // A valid operator token authenticates on its own (CLI / runbook access).
+  if (!id) return role === 'operator' ? { id: 'operator', role } : undefined;
   if (!SAFE_ACTOR_ID.test(id)) throw new ActorAuthError('INVALID_ACTOR');
-  return { id, role: actorRole(request) };
+  return { id, role };
 }
 
 export function requireActor(request: Request): ActorContext {

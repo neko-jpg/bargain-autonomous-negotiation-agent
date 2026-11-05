@@ -352,5 +352,21 @@ export async function runAttackSuite(): Promise<Checker> {
       calls === 1 && !first.duplicate && second.duplicate && second.receipt.effectId === first.receipt.effectId, `executor calls=${calls}`);
   }
 
+  // A23 — found by the fuzzer: the buyer lowers its budget, then the seller accepts the buyer's older, higher offer.
+  {
+    const f = await newFixture({ persisted, buyerPolicy: { maxPrice: 64_500, targetPrice: 60_000 } });
+    await act(f.session.id, { type: 'human_offer', offerPrice: 64_500 }, f.buyer);
+    const stale = (await getPersistedSession(f.session.id) as NegotiationSession).offers.at(-1)!;
+    await act(f.session.id, { type: 'update_policy', buyerPolicy: { targetPrice: 58_000, maxPrice: 60_000, deadlineDays: 3, autoPurchase: false, delegationLevel: 2 } }, f.buyer);
+    const sellerAccept = await act(f.session.id, { type: 'human_accept', targetOfferId: stale.id }, f.seller);
+    selectPlanner('accept-anything');
+    const agentAccept = await act(f.session.id, { type: 'auto_step' }, f.buyer); // the seller agent tries the same
+    selectPlanner(undefined);
+    const after = await getPersistedSession(f.session.id) as NegotiationSession;
+    check.record('A23', 'An offer made under an older, higher budget cannot be accepted after the budget is lowered',
+      !sellerAccept.ok && sellerAccept.code === 'TARGET_OFFER_WITHDRAWN' && agentAccept.ok && after.status !== 'awaiting_commit' && (await executedEffects(f.session.id)).length === 0,
+      `seller→${sellerAccept.ok ? 'accepted' : sellerAccept.code}, seller agent→${after.offers.at(-1)?.actionType} (status ${after.status})`);
+  }
+
   return check;
 }
