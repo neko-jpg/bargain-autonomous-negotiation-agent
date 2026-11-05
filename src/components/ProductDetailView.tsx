@@ -22,8 +22,6 @@ export function ProductDetailView({ listing, onStartNegotiation, onBuyNow }: Pro
   const [maxText, setMaxText] = useState('');
   const [deadlineDays, setDeadlineDays] = useState(3);
   const [autoNegotiate, setAutoNegotiate] = useState(true);
-  const [autoPurchase, setAutoPurchase] = useState(false);
-  const [delegationLevel, setDelegationLevel] = useState<1 | 2 | 3>(2);
   const [liked, setLiked] = useState(false);
   const [activeImage, setActiveImage] = useState(0);
   const [isBuying, setIsBuying] = useState(false);
@@ -35,8 +33,6 @@ export function ProductDetailView({ listing, onStartNegotiation, onBuyNow }: Pro
     setMaxText(String(maximum));
     setDeadlineDays(3);
     setAutoNegotiate(true);
-    setAutoPurchase(false);
-    setDelegationLevel(2);
     setLiked(false);
     setActiveImage(0);
   }, [listing.id, listing.price]);
@@ -68,9 +64,8 @@ export function ProductDetailView({ listing, onStartNegotiation, onBuyNow }: Pro
       targetPrice: target,
       maxPrice,
       deadlineDays,
-      autoPurchase: autoPurchase && delegationLevel === 3,
+      autoPurchase: false,
       autoNegotiate,
-      delegationLevel,
     });
   };
 
@@ -186,14 +181,11 @@ export function ProductDetailView({ listing, onStartNegotiation, onBuyNow }: Pro
                 <label className="field-label">交渉期限
                   <select id="deadline-days" name="deadlineDays" value={deadlineDays} onChange={(event) => setDeadlineDays(Number(event.target.value))} className="field-input mt-2"><option value={1}>1日</option><option value={3}>3日</option><option value={7}>7日</option><option value={14}>14日</option></select>
                 </label>
-                <label className="field-label">委任レベル
-                  <select id="delegation-level" name="delegationLevel" value={delegationLevel} onChange={(event) => setDelegationLevel(Number(event.target.value) as 1 | 2 | 3)} className="field-input mt-2"><option value={1}>Level 1：提案のみ</option><option value={2}>Level 2：交渉代行・購入確認</option><option value={3}>Level 3：完全委任</option></select>
-                </label>
               </div>
 
               <div className="mt-5 space-y-1 border-t border-slate-200 pt-4">
                 <AriaSwitch isSelected={autoNegotiate} onChange={setAutoNegotiate} className="switch-row"><span className="switch-track"><span className="switch-thumb" /></span><span><span className="block text-sm font-semibold text-slate-900">自動交渉を有効にする</span><span className="block text-sm font-normal text-slate-500">市場の変化に応じて、次の提案を自動作成します。</span></span></AriaSwitch>
-                <AriaSwitch isSelected={autoPurchase && delegationLevel === 3} onChange={setAutoPurchase} isDisabled={delegationLevel !== 3} className="switch-row"><span className="switch-track"><span className="switch-thumb" /></span><span><span className="block text-sm font-semibold text-slate-900">合意後に購入確認を自動化</span><span className="block text-sm font-normal text-slate-500">Level 3のときだけ有効です。</span></span></AriaSwitch>
+                <p className="px-1 py-2 text-sm text-slate-600">購入を確定するには、合意内容について買い手の承認が必要です。</p>
               </div>
 
               <div className="product-detail-privacy mt-5 flex items-start gap-3 rounded-xl p-4 text-sm"><LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" aria-hidden="true" /><p>上限価格は相手に公開されません。BARGAINは設定した上限を超える提案を行いません。</p></div>

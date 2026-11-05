@@ -3,7 +3,7 @@ import { CATALOG_LISTINGS, DEMO_CATALOG_ID } from '@/lib/catalog/catalogAdapter'
 
 /**
  * Compatibility export for the negotiation demo. The source of truth is the
- * curated 50-item catalog synced from メルカリUI_kit, not hand-written mock rows.
+ * generated catalog in src/lib/catalog, not hand-written mock rows.
  */
 export const INITIAL_LISTINGS: Listing[] = CATALOG_LISTINGS;
 
@@ -16,7 +16,6 @@ export const DEFAULT_BUYER_POLICY_DEMO: BuyerPolicy = {
   deadlineDays: 3,
   autoPurchase: true,
   autoNegotiate: true,
-  delegationLevel: 3,
   maxDeliveryDays: 7,
   maxShippingCost: 0,
   minQuantity: 1,
