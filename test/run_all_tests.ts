@@ -7,6 +7,7 @@ import { runCatalogTests } from './catalog.test';
 import { runEvaluationTests } from './evaluation.test';
 import { runWorkflowStoreTests } from './unit/workflowStore.test';
 import { runActorAuthTests } from './unit/actor.test';
+import { runI18nTests } from './unit/i18n.test';
 import { runQuickSafety } from './safety/quick';
 import { runDatabaseSuite } from './safety/db.test';
 
@@ -24,12 +25,13 @@ async function main() {
   const t7 = await runEvaluationTests();
   const t8 = await runWorkflowStoreTests();
   const t9 = runActorAuthTests();
+  const t11 = runI18nTests();
   const safety = await runQuickSafety();
   const database = await runDatabaseSuite();
   const t10 = [...safety, ...database].every((check) => check.passed);
 
   console.log('\n====================================================');
-  if (t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 && t9 && t10) {
+  if (t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 && t9 && t10 && t11) {
     console.log('🎉 ALL TESTS PASSED SUCCESSFULLY! (100% PASS RATE)');
     console.log('====================================================\n');
     process.exit(0);
