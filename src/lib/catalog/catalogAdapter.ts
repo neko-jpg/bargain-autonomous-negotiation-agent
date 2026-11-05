@@ -1,5 +1,5 @@
 import { CATALOG_ITEMS, CATALOG_ITEM_COUNT } from './catalogData.generated';
-import type { MercariItem } from './types';
+import type { CatalogSourceItem } from './types';
 import { Listing } from '@/types/negotiation';
 
 export type CatalogCategoryId =
@@ -52,16 +52,16 @@ const conditionMap: Record<string, Listing['condition']> = {
   傷や汚れあり: 'fair',
 };
 
-function numericId(item: MercariItem) {
+function numericId(item: CatalogSourceItem) {
   const match = item.id.match(/(\d+)$/);
   return match ? Number(match[1]) : 1;
 }
 
-function categoryIdFor(item: MercariItem): CatalogCategoryId {
+function categoryIdFor(item: CatalogSourceItem): CatalogCategoryId {
   return categoryIdBySource.get(item.category[0] ?? '') ?? 'other';
 }
 
-function mapCatalogItem(item: MercariItem): Listing {
+function mapCatalogItem(item: CatalogSourceItem): Listing {
   const serial = numericId(item);
   const imageUrl = item.images[0] ?? '/images/products/pexels-selected/0001-pexels-1432236.jpg';
   const categoryPath = item.category;

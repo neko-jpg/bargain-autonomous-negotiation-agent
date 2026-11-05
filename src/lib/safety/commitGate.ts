@@ -10,7 +10,7 @@ import { canonicalJson, constantTimeEqualHex, hashCanonical, hmacHex } from '@/l
  *   1. the kill switch is released,
  *   2. every approver required by a deterministic policy holds a signed grant
  *      bound to the exact intent hash (or the policy pre-authorizes it), and
- *   3. the intent has not already been executed (exactly-once ledger).
+ *   3. the intent has not already been reserved (at most one attempt).
  *
  * Nothing here knows about negotiations; see src/lib/negotiation/commit.ts for
  * the purchase binding and examples/ for a second domain.
@@ -100,9 +100,9 @@ export interface EffectLedger {
   /**
    * Atomically claims an intent. `reserved` means the caller now owns the
    * execution; `executed` means it already happened; `in_progress` means
-   * another worker holds a fresh reservation.
+   * an earlier reservation or failed attempt requires reconciliation.
    */
-  reserve(entry: LedgerEntry, leaseMs: number): Promise<{ outcome: 'reserved' | 'executed' | 'in_progress'; entry: LedgerEntry }>;
+  reserve(entry: LedgerEntry): Promise<{ outcome: 'reserved' | 'executed' | 'in_progress'; entry: LedgerEntry }>;
   markExecuted(intentHash: string, externalRef: string | undefined, executedAt: string): Promise<LedgerEntry>;
   markFailed(intentHash: string, error: string): Promise<void>;
   list(subjectId?: string): Promise<LedgerEntry[]>;
@@ -203,7 +203,6 @@ export interface GateDependencies {
   isKillSwitchEngaged: () => Promise<boolean>;
   secret: string;
   now?: () => Date;
-  leaseMs?: number;
 }
 
 /**
@@ -222,6 +221,7 @@ export async function executeIrreversibleEffect(
 
   const existing = await deps.ledger.get(intentHash);
   if (existing?.status === 'executed') return { receipt: toReceipt(existing), duplicate: true };
+  if (existing?.status === 'failed') throw new SafetyError('EFFECT_RESULT_UNKNOWN');
 
   if (await deps.isKillSwitchEngaged()) throw new SafetyError('KILL_SWITCH_ENGAGED');
 
@@ -239,9 +239,16 @@ export async function executeIrreversibleEffect(
     status: 'reserved',
     createdAt: existing?.createdAt ?? timestamp,
     reservedAt: timestamp,
-  }, deps.leaseMs ?? 60_000);
+  });
   if (reservation.outcome === 'executed') return { receipt: toReceipt(reservation.entry), duplicate: true };
   if (reservation.outcome === 'in_progress') throw new SafetyError('EFFECT_IN_PROGRESS');
+
+  // Once reserved, never release automatically: a crash may have happened after
+  // the external service acted. This also makes a late stop conservative.
+  if (await deps.isKillSwitchEngaged()) {
+    await deps.ledger.markFailed(intentHash, 'KILL_SWITCH_BEFORE_EXECUTION');
+    throw new SafetyError('KILL_SWITCH_ENGAGED');
+  }
 
   let externalRef: string | undefined;
   try {
@@ -267,12 +274,10 @@ export class MemoryEffectLedger implements EffectLedger {
     return entry ? structuredClone(entry) : undefined;
   }
 
-  async reserve(entry: LedgerEntry, leaseMs: number) {
+  async reserve(entry: LedgerEntry) {
     const existing = this.entries.get(entry.intentHash);
     if (existing?.status === 'executed') return { outcome: 'executed' as const, entry: structuredClone(existing) };
-    if (existing?.status === 'reserved' && Date.parse(entry.reservedAt) - Date.parse(existing.reservedAt) < leaseMs) {
-      return { outcome: 'in_progress' as const, entry: structuredClone(existing) };
-    }
+    if (existing) return { outcome: 'in_progress' as const, entry: structuredClone(existing) };
     const reserved = { ...structuredClone(entry), status: 'reserved' as const, error: undefined };
     this.entries.set(entry.intentHash, reserved);
     return { outcome: 'reserved' as const, entry: structuredClone(reserved) };

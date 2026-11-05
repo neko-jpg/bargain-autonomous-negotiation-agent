@@ -67,6 +67,8 @@ export class WebhookEffectExecutor implements EffectExecutor {
           'X-Bargain-Signature': `sha256=${hmacHex(this.signingSecret, body)}`,
         },
         body,
+        // Never replay an irreversible POST through an HTTP redirect.
+        redirect: 'error',
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`WEBHOOK_STATUS_${response.status}`);

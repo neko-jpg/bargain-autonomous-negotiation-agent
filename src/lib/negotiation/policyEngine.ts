@@ -85,6 +85,16 @@ export function sanitizeOfferByPolicy(
 ): PolicyDecision {
   const corrections: string[] = [];
   const terms = normalizeNegotiationTerms(listing, inputTerms);
+  // Units are not a negotiable dimension here: a listing has fixed stock and
+  // the quoted price is the price of the whole lot. Anything above stock is a
+  // correction, never a silent multiplication of what the buyer owes.
+  const stock = typeof listing.inventoryQuantity === 'number' && listing.inventoryQuantity > 0
+    ? listing.inventoryQuantity
+    : 1;
+  if (terms.quantity > stock) {
+    terms.quantity = stock;
+    addCorrection(corrections, `数量を在庫数（${stock}点）に補正しました。`);
+  }
   let sanitizedPrice = Number.isFinite(price) ? Math.max(0, Math.round(price)) : 0;
 
   if (role === 'buyer') {

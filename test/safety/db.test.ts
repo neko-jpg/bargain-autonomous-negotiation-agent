@@ -6,6 +6,8 @@ import { getDatabasePool, getPersistedSession, listAuditEntries, setDatabasePool
 import { decideApprovalTask, listApprovalTasks } from '../../src/lib/negotiation/workflowStore';
 import { verifyAuditChain } from '../../src/lib/negotiation/auditLog';
 import { NegotiationSession } from '../../src/types/negotiation';
+import { getEffectLedger } from '../../src/lib/negotiation/commit';
+import { runGateRegressions } from './gate-regressions.test';
 
 /**
  * Runs the PostgreSQL code path on PGlite: regressions for the two
@@ -91,7 +93,8 @@ export async function runDatabaseSuite(): Promise<Checker[]> {
 
     const attacks = await runAttackSuite();
     attacks.results.forEach((result) => { result.suite = 'attacks-postgres'; });
-    return [check, attacks];
+    const gate = await runGateRegressions(getEffectLedger(), 'postgres');
+    return [check, attacks, gate];
   } finally {
     setDatabasePoolForTesting(undefined);
     await close();

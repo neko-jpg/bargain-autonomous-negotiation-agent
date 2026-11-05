@@ -1,5 +1,5 @@
 /* Generated from manifest.json and catalog-metadata.json. Do not edit by hand. */
-import type { MercariItem, ProductFamily, ProductVariant } from './types';
+import type { CatalogSourceItem, ProductFamily, ProductVariant } from './types';
 
 interface CatalogSeed {
   id: string;
@@ -3296,7 +3296,7 @@ export const CATALOG_VARIANTS: ProductVariant[] = Array.from(new Map(CATALOG_SEE
   searchTags: seed.searchTags,
 }])).values());
 
-export const CATALOG_ITEMS: MercariItem[] = CATALOG_SEEDS.map((seed) => ({
+export const CATALOG_ITEMS: CatalogSourceItem[] = CATALOG_SEEDS.map((seed) => ({
   id: seed.id,
   sku: seed.sku,
   title: `${seed.title} デモ出品 #${seed.id.replace('demo-', '')}`,

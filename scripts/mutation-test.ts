@@ -94,7 +94,10 @@ const ROOT = join(__dirname, '..');
 function applyEdits(directory: string, mutant: Mutant) {
   for (const edit of mutant.edits) {
     const path = join(directory, edit.file);
-    const source = readFileSync(path, 'utf8');
+    // Normalise line endings before searching. A Windows checkout with
+    // core.autocrlf=true otherwise reads the same file as CRLF, and every
+    // multi-line mutation target silently stops matching.
+    const source = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
     const occurrences = source.split(edit.find).length - 1;
     if (occurrences !== 1) throw new Error(`${mutant.id}: expected exactly one match in ${edit.file}, found ${occurrences}`);
     writeFileSync(path, source.replace(edit.find, edit.replace));

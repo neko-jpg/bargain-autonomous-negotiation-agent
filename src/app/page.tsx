@@ -179,7 +179,7 @@ export default function Home() {
   const handleBuyNow = useCallback(async (price: number) => {
     if (!activeListing) return;
     try {
-      const buyPolicy: BuyerPolicy = { targetPrice: price, maxPrice: price, deadlineDays: 1, autoPurchase: true, autoNegotiate: false, delegationLevel: 3 };
+      const buyPolicy: BuyerPolicy = { targetPrice: price, maxPrice: price, deadlineDays: 1, autoPurchase: false, autoNegotiate: false };
       const created = await createSession(activeListing.id, buyPolicy);
       const offerResponse = await fetchWithTimeout(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',

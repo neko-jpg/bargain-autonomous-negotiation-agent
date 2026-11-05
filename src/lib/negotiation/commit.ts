@@ -13,7 +13,6 @@ import {
   RequiredApprover,
   SafetyError,
 } from '@/lib/safety/commitGate';
-import { hashCanonical } from '@/lib/safety/hash';
 import { SandboxEffectExecutor, WebhookEffectExecutor } from '@/lib/safety/executors';
 import { NegotiationOffer, NegotiationSession, PurchaseIntentPayload } from '@/types/negotiation';
 import { defaultNegotiationTerms, totalOfferCost } from '@/lib/negotiation/terms';
@@ -57,23 +56,13 @@ export function buildPurchaseIntent(session: NegotiationSession, agreementOffer:
   };
 }
 
-/** Deterministic: who (if anyone) must sign before the purchase may run. */
+/** Every purchase requires a buyer's approval for this exact intent. */
 export function purchaseRequirement(session: NegotiationSession, payload: PurchaseIntentPayload): AuthorizationRequirement {
-  const approvers: RequiredApprover[] = [];
   const buyerReason = buyerCommitApprovalReason(session.buyerPolicy, payload.total);
-  if (buyerReason) approvers.push({ id: session.buyerId, role: 'buyer', reason: buyerReason });
+  const approvers: RequiredApprover[] = [{ id: session.buyerId, role: 'buyer', reason: buyerReason ?? '購入確定には買い手の承認が必要です。' }];
   const sellerReason = sellerCommitApprovalReason(session.sellerPolicy, payload.price);
   if (sellerReason) approvers.push({ id: session.sellerId, role: 'seller', reason: sellerReason });
-  if (approvers.length > 0) return { mode: 'human', approvers, reason: 'policy_requires_human_approval' };
-  return {
-    mode: 'policy',
-    // Record exactly which policy values pre-authorized the purchase.
-    policyId: `policy:${hashCanonical({
-      buyer: { autoPurchase: session.buyerPolicy.autoPurchase, maxPrice: session.buyerPolicy.maxPrice, autoApprovalMaxPrice: session.buyerPolicy.autoApprovalMaxPrice },
-      seller: { autoAccept: session.sellerPolicy.autoAccept, minPrice: session.sellerPolicy.minPrice, autoApprovalMinPrice: session.sellerPolicy.autoApprovalMinPrice },
-    }).slice(0, 16)}`,
-    reason: 'within_auto_approval_policy',
-  };
+  return { mode: 'human', approvers, reason: 'purchase_requires_human_approval' };
 }
 
 /** Pure transition used by both the agent graph and human acceptance. */
@@ -198,7 +187,7 @@ export class PostgresEffectLedger implements EffectLedger {
     return result.rows[0] ? toEntry(result.rows[0]) : undefined;
   }
 
-  async reserve(entry: LedgerEntry, leaseMs: number) {
+  async reserve(entry: LedgerEntry) {
     const database = this.database();
     const inserted = await database.query(
       `insert into effect_outbox (intent_hash, effect_id, kind, subject_id, amount, currency, payload, authorization_record, executor, status, created_at, reserved_at)
@@ -208,14 +197,6 @@ export class PostgresEffectLedger implements EffectLedger {
       [entry.intentHash, entry.effectId, entry.kind, entry.subjectId, entry.amount, entry.currency, JSON.stringify(entry.payload), JSON.stringify(entry.authorization), entry.executor, new Date(entry.createdAt), new Date(entry.reservedAt)]
     );
     if (inserted.rows[0]) return { outcome: 'reserved' as const, entry: toEntry(inserted.rows[0]) };
-    const leaseCutoff = new Date(Date.parse(entry.reservedAt) - leaseMs);
-    const retaken = await database.query(
-      `update effect_outbox set status = 'reserved', reserved_at = $2, authorization_record = $3, executor = $4, error = null
-       where intent_hash = $1 and (status = 'failed' or (status = 'reserved' and reserved_at <= $5))
-       returning *`,
-      [entry.intentHash, new Date(entry.reservedAt), JSON.stringify(entry.authorization), entry.executor, leaseCutoff]
-    );
-    if (retaken.rows[0]) return { outcome: 'reserved' as const, entry: toEntry(retaken.rows[0]) };
     const current = await this.get(entry.intentHash);
     if (!current) throw new SafetyError('LEDGER_ENTRY_MISSING');
     return { outcome: current.status === 'executed' ? 'executed' as const : 'in_progress' as const, entry: current };

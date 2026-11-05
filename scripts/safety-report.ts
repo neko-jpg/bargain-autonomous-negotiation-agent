@@ -13,10 +13,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runArchitectureSuite } from '../test/safety/architecture.test';
 import { runAttackSuite } from '../test/safety/attacks.test';
+import { runGateRegressions } from '../test/safety/gate-regressions.test';
+import { MemoryEffectLedger } from '../src/lib/safety/commitGate';
 import { runDatabaseSuite } from '../test/safety/db.test';
 import { runFuzz } from '../test/safety/fuzz.test';
 import { runExplorer } from '../test/safety/explorer.test';
 import { runReuseCheck } from '../test/safety/quick';
+import { runInjectionSuite } from '../test/safety/injection.test';
 import { runMutationTests, MutantResult } from './mutation-test';
 import { runEvaluationSuite } from '../src/lib/evaluation/runner';
 import { INVARIANTS } from '../src/lib/negotiation/invariants';
@@ -26,7 +29,11 @@ const write = process.argv.includes('--write');
 const ROOT = join(__dirname, '..');
 
 function gitCommit() {
-  try { return execSync('git rev-parse --short HEAD', { cwd: ROOT, encoding: 'utf8' }).trim(); } catch { return 'unknown'; }
+  try {
+    const head = execSync('git rev-parse --short HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
+    const dirty = execSync('git status --porcelain', { cwd: ROOT, encoding: 'utf8' }).trim().length > 0;
+    return dirty ? `${head} (working tree modified)` : head;
+  } catch { return 'unknown'; }
 }
 
 const mark = (passed: boolean) => (passed ? '✅ pass' : '❌ FAIL');
@@ -40,7 +47,9 @@ async function main() {
 
   const architecture = runArchitectureSuite();
   const attacksMemory = await runAttackSuite();
-  const [postgres, attacksPostgres] = await runDatabaseSuite();
+  const gateMemory = await runGateRegressions(new MemoryEffectLedger(), 'memory');
+  const injection = await runInjectionSuite();
+  const [postgres, attacksPostgres, gatePostgres] = await runDatabaseSuite();
   const fuzz = await runFuzz({ seed: fuzzSeed, sessions: fuzzSessions, steps: 25 });
   const explorer = await runExplorer(explorerDepth);
   const reuse = await runReuseCheck();
@@ -51,7 +60,7 @@ async function main() {
     mutants = runMutationTests();
   }
 
-  const checks: CheckResult[] = [architecture, attacksMemory, postgres, attacksPostgres, fuzz.check, explorer.check, reuse].flatMap((checker) => checker.results);
+  const checks: CheckResult[] = [architecture, attacksMemory, gateMemory, injection, postgres, attacksPostgres, gatePostgres, fuzz.check, explorer.check, reuse].flatMap((checker) => checker.results);
   const allPassed = checks.every((check) => check.passed)
     && mutants.every((mutant) => mutant.killed)
     && evaluation.metrics.passedCount === evaluation.metrics.scenarioCount;
@@ -79,10 +88,12 @@ async function main() {
 | Attack cases (in-memory store) | ${attacksMemory.results.filter((r) => r.passed).length}/${attacksMemory.results.length} blocked |
 | Attack cases (PostgreSQL via PGlite) | ${attacksPostgres.results.filter((r) => r.passed).length}/${attacksPostgres.results.length} blocked |
 | PostgreSQL regressions and durability (R1–R2 reproduce review bugs) | ${postgres.results.filter((r) => r.passed).length}/${postgres.results.length} pass |
+| Gate failure and kill-switch timing (memory / PGlite) | ${gateMemory.results.filter((r) => r.passed).length}/${gateMemory.results.length} / ${gatePostgres.results.filter((r) => r.passed).length}/${gatePostgres.results.length} pass |
 | Fuzzing (seed ${fuzzSeed}) | ${fuzz.metrics.steps.toLocaleString()} random steps over ${fuzzSessions.toLocaleString()} sessions, **${fuzz.metrics.violations.length} violations**, ${fuzz.metrics.unexpectedErrors.length} unexpected errors |
 | Bounded exhaustive exploration | all ${explorer.metrics.sequences.toLocaleString()} sequences of ${explorerDepth} moves (${explorer.metrics.alphabet}-move alphabet × ${explorer.metrics.startStates} start states), ${explorer.metrics.transitions.toLocaleString()} transitions, **${explorer.metrics.violations.length} violations** |
 | Mutation testing | ${mutants.length ? `${killed}/${mutants.length} injected safety bugs detected` : 'skipped'} |
 | Architecture fitness tests | ${architecture.results.filter((r) => r.passed).length}/${architecture.results.length} pass |
+| Planner hardening (indirect prompt injection) | ${injection.results.filter((r) => r.passed).length}/${injection.results.length} pass — 24 vectors neutralised, prompt carries no counterparty free text |
 | Reuse in a second domain (\`npm run example:reuse\`) | ${mark(reuse.passed)} — cloud deletions gated by the same code |
 | Negotiation evaluation scenarios | ${evaluation.metrics.passedCount}/${evaluation.metrics.scenarioCount} pass |
 
@@ -101,7 +112,7 @@ executes what the model says, and as what BARGAIN actually wrote and executed.
 | Invalid number (NaN / negative) sent | ${naive.invalidNumber} | **${gated.invalidNumber}** |
 | Model calls scored | ${fuzz.metrics.plannerCalls} | — |
 
-Purchases that did happen in the fuzz run: ${fuzz.metrics.dealsHumanApproved} with signed human approval, ${fuzz.metrics.dealsPolicyApproved} pre-authorized by policy.
+Purchases that did happen in the fuzz run: ${fuzz.metrics.dealsHumanApproved} with signed human approval, ${fuzz.metrics.dealsPolicyApproved} policy-only (must be zero).
 
 ## Attack cases
 

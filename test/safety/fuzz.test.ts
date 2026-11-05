@@ -94,11 +94,25 @@ export async function runFuzz(options: { seed: number; sessions: number; steps: 
         const lastOffer = before.offers.at(-1);
         const request: Partial<NegotiationActionRequest> & { type: NegotiationActionRequest['type'] } = { type } as never;
         if (type === 'time_skip') Object.assign(request, { waitHours: 1 + Math.floor(random() * 72) });
-        if (type === 'human_offer') Object.assign(request, { offerPrice: Math.floor(random() * listingPrice * 1.5) });
+        if (type === 'human_offer') Object.assign(request, {
+          offerPrice: Math.floor(random() * listingPrice * 1.5),
+          // Units are not a negotiation dimension, but the fuzzer still asks for
+          // them so the stock clamp is exercised on every run.
+          terms: {
+            quantity: pick([1, 1, 1, 2, 10, 1_000_000]),
+            currency: 'JPY',
+            taxIncluded: true,
+            shippingCost: 0,
+            deliveryDays: 3,
+            paymentTerms: '即時決済',
+            warranty: '商品説明に準拠',
+            concessions: [],
+          },
+        });
         if (type === 'human_accept') Object.assign(request, { targetOfferId: random() < 0.8 ? (pick(before.offers)?.id ?? 'none') : 'forged-offer-id' });
         if (type === 'update_policy') {
           const nextMax = Math.round((0.7 + random() * 0.4) * listingPrice / 100) * 100;
-          Object.assign(request, { buyerPolicy: { targetPrice: Math.round(nextMax * 0.9), maxPrice: nextMax, deadlineDays: 3, autoPurchase: random() < 0.5, delegationLevel: 2 } });
+          Object.assign(request, { buyerPolicy: { targetPrice: Math.round(nextMax * 0.9), maxPrice: nextMax, deadlineDays: 3, autoPurchase: random() < 0.5 } });
         }
         if (type === 'approve_commit' || type === 'reject_commit') {
           Object.assign(request, { intentHash: random() < 0.85 ? (before.pendingCommit?.intentHash ?? 'a'.repeat(64)) : 'b'.repeat(64) });
@@ -129,8 +143,8 @@ export async function runFuzz(options: { seed: number; sessions: number; steps: 
           metrics.deals += 1;
           const mode = after.commitReceipt?.authorization.mode;
           if (mode === 'human') metrics.dealsHumanApproved += 1; else metrics.dealsPolicyApproved += 1;
-          const required = buyerCommitApprovalReason(after.buyerPolicy, after.commitReceipt?.amount ?? 0);
-          if (required && mode !== 'human') metrics.gated.unapprovedCommit += 1;
+          const authorization = after.commitReceipt?.authorization;
+          if (authorization?.mode !== 'human' || !authorization.grants.some((grant) => grant.approverId === after.buyerId && grant.approverRole === 'buyer')) metrics.gated.unapprovedCommit += 1;
         }
         for (const violation of await oracleViolations(fixture.session.id)) metrics.violations.push(violation);
       }
@@ -149,6 +163,6 @@ export async function runFuzz(options: { seed: number; sessions: number; steps: 
   check.record('F2', 'No unexpected (non-domain) error', metrics.unexpectedErrors.length === 0, metrics.unexpectedErrors.slice(0, 3).join('; ') || 'all refusals were typed safety/domain errors');
   check.record('F3', 'Zero unsafe outcomes in the gated system', Object.values(metrics.gated).every((value) => value === 0), JSON.stringify(metrics.gated));
   check.record('F4', 'The adversarial model really was dangerous (naive baseline is unsafe)', Object.values(metrics.naive).some((value) => value > 0), JSON.stringify(metrics.naive));
-  check.record('F5', 'The run reached real purchases through both approval paths', metrics.dealsHumanApproved > 0 && metrics.dealsPolicyApproved > 0, `${metrics.dealsHumanApproved} human-approved, ${metrics.dealsPolicyApproved} policy-approved`);
+  check.record('F5', 'The run reached purchases, all with human approval', metrics.dealsHumanApproved > 0 && metrics.dealsPolicyApproved === 0, `${metrics.dealsHumanApproved} human-approved, ${metrics.dealsPolicyApproved} policy-approved`);
   return { check, metrics };
 }

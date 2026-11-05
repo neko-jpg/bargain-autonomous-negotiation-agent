@@ -4,7 +4,10 @@ import { runArchitectureSuite } from './architecture.test';
 import { runAttackSuite } from './attacks.test';
 import { runFuzz } from './fuzz.test';
 import { runExplorer } from './explorer.test';
+import { runInjectionSuite } from './injection.test';
 import { runReuseExample } from '../../examples/cloud-cleanup/run';
+import { MemoryEffectLedger } from '../../src/lib/safety/commitGate';
+import { runGateRegressions } from './gate-regressions.test';
 
 export async function runReuseCheck() {
   console.log('\n--- ♻️ Running Reuse Example (cloud resource deletion) ---');
@@ -16,10 +19,12 @@ export async function runReuseCheck() {
 export async function runQuickSafety() {
   const architecture = runArchitectureSuite();
   const attacks = await runAttackSuite();
+  const gate = await runGateRegressions(new MemoryEffectLedger(), 'memory');
+  const injection = await runInjectionSuite();
   const fuzz = await runFuzz({ seed: 20261105, sessions: Number(process.env.SAFETY_FUZZ_SESSIONS ?? 150), steps: 20 });
   const explorer = await runExplorer(Number(process.env.SAFETY_EXPLORER_DEPTH ?? 2));
   const reuse = await runReuseCheck();
-  return [architecture, attacks, fuzz.check, explorer.check, reuse];
+  return [architecture, attacks, gate, injection, fuzz.check, explorer.check, reuse];
 }
 
 if (require.main === module) {

@@ -4,6 +4,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { z } from 'zod';
 import { AgentAlternative, Listing, AgentActionType, ActionReasoning, NegotiationOffer, NegotiationTerms, NegotiationMemory } from '@/types/negotiation';
 import { normalizeNegotiationTerms } from '@/lib/negotiation/terms';
+import { PROMPT_DATA_BOUNDARY, promptVisibleHistory, promptVisibleMemory, singleLine } from '@/lib/agent/promptSafety';
 import { isProductionEnvironment } from '@/lib/runtime/environment';
 
 export interface AgentPlanningResult {
@@ -17,13 +18,13 @@ export interface AgentPlanningResult {
   terms?: NegotiationTerms;
   alternatives: AgentAlternative[];
   telemetry: {
-    provider: 'google' | 'openai' | 'heuristic';
+    provider: 'google' | 'openai' | 'opencode' | 'heuristic';
     model?: string;
     fallback: boolean;
   };
 }
 
-type LLMProviderName = 'google' | 'openai' | 'auto';
+type LLMProviderName = 'google' | 'openai' | 'opencode' | 'auto';
 
 export interface PlannerInput {
   role: 'buyer' | 'seller';
@@ -45,11 +46,83 @@ export function setAgentPlannerForTesting(override: PlannerOverride | undefined)
   plannerOverride = override;
 }
 
+type PromptOverride = (input: PlannerUserPromptInput) => string;
+let promptOverride: PromptOverride | undefined;
+
+/**
+ * Test hook for the red team only: replace the hardened user prompt with an
+ * unprotected one that carries counterparty free text. It exists to measure how
+ * far a real model can be hijacked when the inbound defence is removed, so the
+ * gate can be shown to hold anyway. It never ships enabled.
+ */
+export function setPlannerPromptForTesting(override: PromptOverride | undefined) {
+  if (isProductionEnvironment()) throw new Error('TEST_HOOK_DISABLED_IN_PRODUCTION');
+  promptOverride = override;
+}
+
+type PlanObserver = (info: { history: NegotiationOffer[]; result: AgentPlanningResult }) => void;
+let planObserver: PlanObserver | undefined;
+
+/** Test hook: sees the model's raw plan before any guardrail touches it. */
+export function setPlanObserverForTesting(observer: PlanObserver | undefined) {
+  if (isProductionEnvironment()) throw new Error('TEST_HOOK_DISABLED_IN_PRODUCTION');
+  planObserver = observer;
+}
+
 const isUsableApiKey = (value: string | undefined): value is string => {
   if (!value) return false;
   const normalized = value.trim().replace(/^['"]|['"]$/g, '');
   return normalized.length > 0 && !/^(your_|placeholder|replace_me|change_me)/i.test(normalized);
 };
+
+/** A hung provider must not stall the negotiation turn. */
+const LLM_TIMEOUT_MS = (() => {
+  const configured = Number(process.env.BARGAIN_LLM_TIMEOUT_MS);
+  // Reasoning models can think for tens of seconds before emitting anything, so
+  // the default is generous but still bounded.
+  return Number.isFinite(configured) && configured >= 1_000 && configured <= 120_000 ? configured : 45_000;
+})();
+/**
+ * Bounded output keeps a verbose or looping model from burning the turn. It is
+ * generous because reasoning models spend tokens before they emit anything, and
+ * a cap that only covers the thinking produces an empty answer.
+ */
+const LLM_MAX_OUTPUT_TOKENS = (() => {
+  const configured = Number(process.env.BARGAIN_LLM_MAX_TOKENS);
+  // 2k is not enough for a reasoning model that must also emit the full plan:
+  // the thinking is billed against the same budget and the JSON gets cut.
+  return Number.isFinite(configured) && configured >= 256 && configured <= 16_384 ? configured : 4_096;
+})();
+/**
+ * Stable per-process routing id for OpenCode Go. The gateway asks for one so it
+ * can route a conversation to the same upstream; without it every call is
+ * answered with MissingSessionID.
+ */
+const opencodeSessionId = `bargain-${globalThis.crypto.randomUUID().slice(0, 12)}`;
+
+export interface PlannerUserPromptInput {
+  history: NegotiationOffer[];
+  lastOpponentOffer?: NegotiationOffer;
+  acceptanceScore: number;
+  memory?: NegotiationMemory;
+}
+
+/**
+ * Pure. The whole user turn is assembled from allowlisted structural fields so
+ * the safety suite can assert exactly what reaches the model — and, more
+ * importantly, what cannot.
+ */
+export function buildPlannerUserPrompt(input: PlannerUserPromptInput): string {
+  const { history, lastOpponentOffer, acceptanceScore, memory } = input;
+  return `現在の交渉履歴: ${JSON.stringify(promptVisibleHistory(history))}
+直近の相手提示: ${lastOpponentOffer ? `¥${lastOpponentOffer.price.toLocaleString()}` : 'まだなし'}
+受諾スコア（統計的に校正された確率ではない）: ${acceptanceScore}
+過去の交渉メモ: ${JSON.stringify(promptVisibleMemory(memory))}
+
+${PROMPT_DATA_BOUNDARY}
+
+最適なアクションと金額を決定してください。`;
+}
 
 const AgentPlanSchema = z.object({
   action: z.enum(['make_offer', 'counter_offer', 'accept_offer', 'reject_offer', 'wait', 'ask_user']),
@@ -95,17 +168,19 @@ const AgentPlanSchema = z.object({
 export class LLMProviderService {
   private static getProviderPreference(): LLMProviderName {
     const configured = process.env.BARGAIN_LLM_PROVIDER?.trim().toLowerCase();
-    return configured === 'google' || configured === 'openai' ? configured : 'auto';
+    return configured === 'google' || configured === 'openai' || configured === 'opencode' ? configured : 'auto';
   }
 
-  private static getModel(): { model: BaseChatModel; provider: 'google' | 'openai'; modelName: string } | null {
+  private static getModel(): { model: BaseChatModel; provider: 'google' | 'openai' | 'opencode'; modelName: string } | null {
     const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
     const provider = this.getProviderPreference();
-    const candidates: Array<'google' | 'openai'> = provider === 'google'
+    const candidates: Array<'google' | 'openai' | 'opencode'> = provider === 'google'
       ? ['google']
       : provider === 'openai'
         ? ['openai']
-        : ['google', 'openai'];
+        : provider === 'opencode'
+          ? ['opencode']
+          : ['google', 'openai', 'opencode'];
 
     for (const candidate of candidates) {
       if (candidate === 'google' && isUsableApiKey(googleApiKey)) {
@@ -117,6 +192,7 @@ export class LLMProviderService {
             // Keep the model configurable, but use a current stable model by default.
             model: modelName,
             temperature: 0.2,
+            maxOutputTokens: LLM_MAX_OUTPUT_TOKENS,
             maxRetries: 1,
           }), provider: 'google', modelName };
         } catch (e) {
@@ -131,10 +207,42 @@ export class LLMProviderService {
             apiKey: process.env.OPENAI_API_KEY,
             modelName,
             temperature: 0.2,
+            maxTokens: LLM_MAX_OUTPUT_TOKENS,
             maxRetries: 1,
           }), provider: 'openai', modelName };
         } catch (e) {
           console.warn('OpenAI client initialization failed, fallback to heuristic engine:', e);
+        }
+      }
+
+      if (candidate === 'opencode' && isUsableApiKey(process.env.OPENCODE_API_KEY)) {
+        try {
+          const modelName = process.env.BARGAIN_OPENCODE_MODEL?.trim();
+          if (!modelName) throw new Error('BARGAIN_OPENCODE_MODEL is required; run `npm run provider:check` to list model ids');
+          // OpenCode routes Go traffic on /inference/go/v1 and requires a stable
+          // session id so requests for one conversation hit the same upstream.
+          const baseURL = (process.env.OPENCODE_BASE_URL?.trim() || 'https://opencode.ai/inference/go/v1').replace(/\/$/, '');
+          const session = process.env.OPENCODE_SESSION_ID?.trim() || opencodeSessionId;
+          // Reasoning dominates latency on this gateway. `low` keeps the plan
+          // coherent while cutting the thinking time; anything else is ignored
+          // by the model, so only offer values it honours.
+          const effort = process.env.BARGAIN_LLM_REASONING_EFFORT?.trim().toLowerCase();
+          const reasoning = effort === 'low' || effort === 'medium' || effort === 'high' ? effort : undefined;
+          return {
+            model: new ChatOpenAI({
+              apiKey: process.env.OPENCODE_API_KEY,
+              modelName,
+              temperature: 0.2,
+              maxTokens: LLM_MAX_OUTPUT_TOKENS,
+              maxRetries: 1,
+              ...(reasoning ? { modelKwargs: { reasoning_effort: reasoning } } : {}),
+              configuration: { baseURL, defaultHeaders: { 'x-opencode-session': session } },
+            }),
+            provider: 'opencode',
+            modelName,
+          };
+        } catch (e) {
+          console.warn('OpenCode client initialization failed, fallback to heuristic engine:', e);
         }
       }
     }
@@ -170,7 +278,7 @@ export class LLMProviderService {
 
         const systemPrompt = `あなたはC2Cマーケットプレイスにおける自律型価格交渉AIエージェント「Project BARGAIN」です。
 役割: ${role === 'buyer' ? '買い手代理 (Buyer Agent)' : '売り手代理 (Seller Agent)'}
-商品: ${listing.title} (出品価格: ¥${listing.price.toLocaleString()}, 相場中央値: ¥${listing.marketMedianPrice.toLocaleString()})
+商品: ${singleLine(listing.title, 80)} (出品価格: ¥${listing.price.toLocaleString()}, 相場中央値: ¥${listing.marketMedianPrice.toLocaleString()})
 出品経過日数: ${listing.daysListed}日, いいね数: ${listing.likesCount}, 需要: ${listing.recentDemand}
 あなたの目標価格: ¥${targetPrice.toLocaleString()}
 あなたの許容限界価格(Private State): ¥${reservationPrice.toLocaleString()} (${role === 'buyer' ? 'この金額を超えてはいけません' : 'この金額を下回ってはいけません'})
@@ -205,35 +313,55 @@ export class LLMProviderService {
   ]
 }`;
 
-        const userPrompt = `現在の交渉履歴: ${JSON.stringify(
-          history.map((h) => ({ role: h.senderRole, price: h.price, terms: h.terms, action: h.actionType }))
-        )}
-直近の相手提示: ${lastOpponentOffer ? `¥${lastOpponentOffer.price.toLocaleString()}` : 'まだなし'}
-受諾スコア（統計的に校正された確率ではない）: ${acceptanceScore}
-過去の交渉メモ: ${JSON.stringify(memory ?? {})}
+        const userPrompt = (promptOverride ?? buildPlannerUserPrompt)({ history, lastOpponentOffer, acceptanceScore, memory });
 
-最適なアクションと金額を決定してください。`;
-
-        const structuredModel = typeof (model as any).withStructuredOutput === 'function'
+        // OpenAI's strict schema mode rejects `.optional()` without
+        // `.nullable()`, and some gateways reject the dialect outright. The
+        // OpenCode gateway is one of them, so it is driven as plain text.
+        const supportsStructuredOutput = configuredModel?.provider !== 'opencode'
+          && typeof (model as any).withStructuredOutput === 'function';
+        const structuredModel = supportsStructuredOutput
           ? (model as any).withStructuredOutput(AgentPlanSchema, { name: 'negotiation_plan' })
-          : model;
+          : undefined;
 
-        const response = await structuredModel.invoke([
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ]);
+        const messages = [
+          { role: 'system' as const, content: systemPrompt },
+          { role: 'user' as const, content: userPrompt },
+        ];
+
+        let response;
+        try {
+          response = await (structuredModel ?? model).invoke(messages, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
+        } catch (error) {
+          if (!structuredModel) throw error;
+          // Some OpenAI-compatible gateways cannot translate the schema into
+          // their response_format dialect. Retry once as plain text; the parser
+          // below already accepts fenced or bare JSON.
+          console.warn('structured output unsupported by this provider, retrying as plain text:', (error as Error).message);
+          response = await model.invoke(messages, { signal: AbortSignal.timeout(LLM_TIMEOUT_MS) });
+        }
 
         const rawResponse = response && typeof response === 'object' && !('content' in response)
           ? response
           : (() => {
+              const meta = (response as { response_metadata?: { finish_reason?: string } }).response_metadata;
               const text = typeof response.content === 'string' ? response.content.trim() : JSON.stringify(response.content);
               const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-              return JSON.parse(unfenced);
+              if (!unfenced) {
+                throw new Error(`empty model output (finish_reason=${meta?.finish_reason ?? 'unknown'})`);
+              }
+              try {
+                return JSON.parse(unfenced);
+              } catch {
+                // A truncated answer is the common failure: the reply stops
+                // mid-string. Say so, with the head of what arrived.
+                throw new Error(`model output was not complete JSON (finish_reason=${meta?.finish_reason ?? 'unknown'}, ${unfenced.length} chars): ${unfenced.slice(0, 120)}`);
+              }
             })();
         const parsedResult = AgentPlanSchema.safeParse(rawResponse);
         if (parsedResult.success) {
           const parsed = parsedResult.data;
-          return {
+          const planned: AgentPlanningResult = {
             action: parsed.action,
             price: parsed.price,
             targetOfferId: parsed.targetOfferId,
@@ -275,6 +403,8 @@ export class LLMProviderService {
               fallback: false,
             },
           };
+          planObserver?.({ history, result: planned });
+          return planned;
         }
       } catch (err) {
         console.warn('LLM inference encountered an issue, falling back to autonomous strategy engine:', err);
@@ -289,8 +419,7 @@ export class LLMProviderService {
       reservationPrice,
       urgency,
       history,
-      acceptanceScore,
-      batna
+      acceptanceScore
     );
     return {
       ...heuristic,
@@ -344,8 +473,7 @@ export class LLMProviderService {
     reservationPrice: number,
     urgency: 'low' | 'medium' | 'high',
     history: NegotiationOffer[],
-    acceptanceScore: number,
-    batna: number
+    acceptanceScore: number
   ): Omit<AgentPlanningResult, 'alternatives' | 'telemetry'> {
     const lastOpponentOffer = [...history]
       .reverse()
@@ -487,7 +615,6 @@ export class LLMProviderService {
 
         // カウンターオファー
         const lastOwnOffer = [...history].reverse().find((o) => o.senderRole.includes('seller'));
-        const currentSellerFloor = Math.max(reservationPrice, targetPrice);
         const sellerConcession = urgency === 'high' ? 0.6 : urgency === 'medium' ? 0.4 : 0.25;
         const baseFrom = lastOwnOffer ? lastOwnOffer.price : listing.price;
         const newSellerPrice = Math.max(
