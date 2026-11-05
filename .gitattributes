@@ -1,0 +1,9 @@
+# Keep every checkout identical so the safety evidence is reproducible on
+# Windows, macOS and Linux. Multi-line source mutation and text comparisons
+# otherwise break on a CRLF working copy.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.svg text
