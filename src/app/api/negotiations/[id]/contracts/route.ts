@@ -8,38 +8,42 @@ import {
   getContractDrafts,
   saveContractDraft,
 } from '@/lib/negotiation/workflowStore';
+import { apiErrorMessage } from '@/lib/i18n/api';
+import { getRequestLocale } from '@/lib/i18n/server';
 
 export const runtime = 'nodejs';
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const locale = await getRequestLocale();
   const { id } = await params;
   let actor;
   try { actor = requireActor(_request); } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: '認証情報が必要です。' }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
   }
   const session = await getPersistedSession(id);
-  if (!session) return NextResponse.json({ error: 'SESSION_NOT_FOUND', message: '交渉セッションが見つかりません。' }, { status: 404 });
+  if (!session) return NextResponse.json({ error: 'SESSION_NOT_FOUND', message: apiErrorMessage(locale, 'SESSION_NOT_FOUND') }, { status: 404 });
   if (actor.role !== 'operator') {
     try { toViewerSession(session, actor.id, actor.role); } catch {
-      return NextResponse.json({ error: 'SESSION_FORBIDDEN', message: 'この交渉を閲覧する権限がありません。' }, { status: 403 });
+      return NextResponse.json({ error: 'SESSION_FORBIDDEN', message: apiErrorMessage(locale, 'SESSION_FORBIDDEN') }, { status: 403 });
     }
   }
   return NextResponse.json({ contracts: await getContractDrafts(id) });
 }
 
 export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const locale = await getRequestLocale();
   const { id } = await params;
   let actor;
   try { actor = requireActor(_request); } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: '認証情報が必要です。' }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
   }
   const session = await getPersistedSession(id);
-  if (!session) return NextResponse.json({ error: 'SESSION_NOT_FOUND', message: '交渉セッションが見つかりません。' }, { status: 404 });
+  if (!session) return NextResponse.json({ error: 'SESSION_NOT_FOUND', message: apiErrorMessage(locale, 'SESSION_NOT_FOUND') }, { status: 404 });
   if (actor.role !== 'operator') {
     try { toViewerSession(session, actor.id, actor.role); } catch {
-      return NextResponse.json({ error: 'SESSION_FORBIDDEN', message: 'この交渉を操作する権限がありません。' }, { status: 403 });
+      return NextResponse.json({ error: 'SESSION_FORBIDDEN_OPERATE', message: apiErrorMessage(locale, 'SESSION_FORBIDDEN_OPERATE') }, { status: 403 });
     }
   }
   try {
@@ -49,8 +53,8 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   } catch (error) {
     const code = error instanceof Error ? error.message : 'INTERNAL_ERROR';
     const message = code === 'CONTRACT_REQUIRES_DEAL'
-      ? '交渉成立後に契約ドラフトを作成できます。'
-      : '契約ドラフトを作成できませんでした。';
+      ? apiErrorMessage(locale, 'CONTRACT_REQUIRES_DEAL')
+      : apiErrorMessage(locale, 'CONTRACT_FAILED');
     return NextResponse.json({ error: code, message }, { status: code === 'CONTRACT_REQUIRES_DEAL' ? 422 : 500 });
   }
 }

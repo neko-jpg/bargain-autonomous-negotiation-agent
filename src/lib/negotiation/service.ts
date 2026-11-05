@@ -10,6 +10,8 @@ import {
 } from '@/lib/negotiation/sessionStore';
 import { NegotiationActionRequest } from '@/lib/negotiation/schemas';
 import { NegotiationOffer, NegotiationSession, PublicNegotiationSession } from '@/types/negotiation';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n/config';
+import { translate, type TranslationKey } from '@/lib/i18n/dictionary';
 import { effectiveSellerFloor, isOfferStillBinding, sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
 import {
   commitPersistedSession,
@@ -18,7 +20,7 @@ import {
 } from '@/lib/negotiation/persistence';
 import { syncCommitApprovalTasks } from '@/lib/negotiation/workflowStore';
 import { ActorContext } from '@/lib/auth/actor';
-import { buildPublicOfferMessage } from '@/lib/negotiation/messages';
+import { buildPublicOfferMessage, buildPublicOfferMessageTemplate } from '@/lib/negotiation/messages';
 import { executeIrreversibleEffect, SafetyError } from '@/lib/safety/commitGate';
 import {
   beginPurchaseCommit,
@@ -167,10 +169,12 @@ function appendHumanAcceptance(session: NegotiationSession, target: NegotiationO
     timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
     senderRole: role === 'buyer' ? 'buyer_human' : 'seller_human',
     senderName: role === 'buyer' ? 'あなた（買い手）' : 'あなた（売り手）',
+    senderKey: role === 'buyer' ? 'role.youBuyer' : 'role.youSeller',
     price: target.price,
     terms,
     actionType: 'accept_offer',
     messageText: buildPublicOfferMessage(role, 'accept_offer', target.price, terms),
+    messageTemplate: buildPublicOfferMessageTemplate(role, 'accept_offer', target.price, terms),
   };
   offer.proposalHash = hashOffer(offer);
   return { ...session, offers: [...session.offers, offer], currentOfferPrice: target.price };
@@ -308,15 +312,25 @@ export async function executeNegotiationAction(
         if (!Number.isInteger(request.offerPrice) || request.offerPrice <= 0 || decision.price !== request.offerPrice || decision.correctionReason) {
           throw new NegotiationServiceError('OFFER_OUT_OF_POLICY');
         }
+        const requestedMessage = request.messageText?.trim();
+        const humanAction = current.offers.length === 0 ? 'make_offer' as const : 'counter_offer' as const;
         next = {
           ...makeOffer(
             current,
             decision.price,
             role === 'buyer' ? 'buyer_human' : 'seller_human',
             role === 'buyer' ? 'あなた（買い手）' : 'あなた（売り手）',
-            request.messageText ?? `¥${decision.price.toLocaleString()}で提案します。`,
-            current.offers.length === 0 ? 'make_offer' : 'counter_offer',
-            decision.terms
+            requestedMessage || buildPublicOfferMessage(role, humanAction, decision.price, decision.terms),
+            humanAction,
+            decision.terms,
+            {
+              senderKey: role === 'buyer' ? 'role.youBuyer' : 'role.youSeller',
+              // Only generated text is re-rendered on locale switch; a message
+              // typed by the human is shown exactly as written.
+              messageTemplate: requestedMessage
+                ? undefined
+                : buildPublicOfferMessageTemplate(role, humanAction, decision.price, decision.terms),
+            }
           ),
           status: 'active',
         };
@@ -403,55 +417,61 @@ export async function executeNegotiationAction(
   });
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
-  SESSION_NOT_FOUND: '交渉セッションが見つかりません。',
-  SESSION_VERSION_CONFLICT: '画面が古くなっています。最新状態を読み込みました。',
-  SESSION_NOT_AUTO_STEP: '現在は自動交渉を実行できません。',
-  SESSION_NOT_TIME_SKIP: '現在は待機時間を進められません。',
-  SESSION_NOT_HUMAN_OFFER: '現在は手動オファーを送信できません。',
-  SESSION_NOT_HUMAN_ACCEPT: '現在はオファーを受諾できません。',
-  SESSION_NOT_HUMAN_REJECT: '現在はオファーを却下できません。',
-  SESSION_NOT_PAUSE: '現在は一時停止できません。',
-  SESSION_NOT_RESUME: '現在は再開できません。',
-  SESSION_NOT_STOP: '現在は停止できません。',
-  SESSION_NOT_UPDATE_POLICY: '現在はポリシーを変更できません。',
-  SESSION_NOT_APPROVE_COMMIT: '承認待ちの購入確定がありません。',
-  SESSION_NOT_REJECT_COMMIT: '承認待ちの購入確定がありません。',
-  SESSION_NOT_RETRY_COMMIT: '再試行できる購入確定がありません。',
-  SESSION_FORBIDDEN: 'この交渉を操作する権限がありません。',
-  NOT_YOUR_TURN: '相手側の手番です。自分の手番でのみ提案・受諾できます。',
-  ACTION_FORBIDDEN_FOR_ROLE: 'この操作を行う権限がありません。',
-  SCRIPTED_DEMO_READ_ONLY: 'スクリプトデモのセッションは操作できません。',
-  KILL_SWITCH_ENGAGED: '安全停止中のため、自動交渉と購入確定は実行できません。',
-  IDEMPOTENCY_KEY_REUSE: '同じ冪等性キーに異なるリクエストは指定できません。',
-  TARGET_OFFER_NOT_FOUND: '受諾対象のオファーが見つかりません。',
-  TARGET_OFFER_NOT_OPPONENT: '相手が送信したオファーだけを受諾できます。',
-  TARGET_OFFER_NOT_ACCEPTABLE: 'そのオファーは受諾可能な状態ではありません。',
-  TARGET_OFFER_SUPERSEDED: 'より新しい提案があるため、このオファーは受諾できません。',
-  TARGET_OFFER_VERSION_CONFLICT: '対象オファーが更新されています。再読み込みしてください。',
-  TARGET_OFFER_EXPIRED: '対象オファーの有効期限が切れています。',
-  TARGET_OFFER_WITHDRAWN: '提示者のポリシー変更により、このオファーは取り下げられています。',
-  OFFER_OUT_OF_POLICY: '価格または取引条件が設定したポリシーの範囲外です。',
-  SESSION_ALREADY_FINISHED: 'この交渉はすでに終了しています。',
-  ROUND_LIMIT_REACHED: '交渉の上限ラウンド数に達しました。人間の確認が必要です。',
-  COMMIT_INTENT_MISMATCH: '購入内容が更新されています。最新の内容を確認してください。',
-  COMMIT_APPROVER_FORBIDDEN: 'この購入確定を承認する権限がありません。',
-  COMMIT_EXPIRED: '購入確定の有効期限が切れています。',
-  NO_PENDING_COMMIT: '承認待ちの購入確定がありません。',
-  INVARIANT_VIOLATION: '安全不変条件に反する更新のため、保存を拒否しました。',
+const ERROR_MESSAGE_KEYS: Record<string, TranslationKey> = {
+  SESSION_NOT_FOUND: 'negotiation.error.sessionNotFound',
+  SESSION_VERSION_CONFLICT: 'negotiation.error.sessionVersionConflict',
+  SESSION_NOT_AUTO_STEP: 'negotiation.error.notAutoStep',
+  SESSION_NOT_TIME_SKIP: 'negotiation.error.notTimeSkip',
+  SESSION_NOT_HUMAN_OFFER: 'negotiation.error.notHumanOffer',
+  SESSION_NOT_HUMAN_ACCEPT: 'negotiation.error.notHumanAccept',
+  SESSION_NOT_HUMAN_REJECT: 'negotiation.error.notHumanReject',
+  SESSION_NOT_PAUSE: 'negotiation.error.notPause',
+  SESSION_NOT_RESUME: 'negotiation.error.notResume',
+  SESSION_NOT_STOP: 'negotiation.error.notStop',
+  SESSION_NOT_UPDATE_POLICY: 'negotiation.error.notUpdatePolicy',
+  SESSION_NOT_APPROVE_COMMIT: 'negotiation.error.notApproveCommit',
+  SESSION_NOT_REJECT_COMMIT: 'negotiation.error.notRejectCommit',
+  SESSION_NOT_RETRY_COMMIT: 'negotiation.error.notRetryCommit',
+  SESSION_FORBIDDEN: 'negotiation.error.forbidden',
+  NOT_YOUR_TURN: 'negotiation.error.notYourTurn',
+  ACTION_FORBIDDEN_FOR_ROLE: 'negotiation.error.actionForbidden',
+  SCRIPTED_DEMO_READ_ONLY: 'negotiation.error.scriptedDemoReadOnly',
+  KILL_SWITCH_ENGAGED: 'negotiation.error.killSwitchEngaged',
+  IDEMPOTENCY_KEY_REUSE: 'negotiation.error.idempotencyKeyReuse',
+  TARGET_OFFER_NOT_FOUND: 'negotiation.error.targetOfferNotFound',
+  TARGET_OFFER_NOT_OPPONENT: 'negotiation.error.targetOfferNotOpponent',
+  TARGET_OFFER_NOT_ACCEPTABLE: 'negotiation.error.targetOfferNotAcceptable',
+  TARGET_OFFER_SUPERSEDED: 'negotiation.error.targetOfferSuperseded',
+  TARGET_OFFER_VERSION_CONFLICT: 'negotiation.error.targetOfferVersionConflict',
+  TARGET_OFFER_EXPIRED: 'negotiation.error.targetOfferExpired',
+  TARGET_OFFER_WITHDRAWN: 'negotiation.error.targetOfferWithdrawn',
+  OFFER_OUT_OF_POLICY: 'negotiation.error.offerOutOfPolicy',
+  SESSION_ALREADY_FINISHED: 'negotiation.error.alreadyFinished',
+  ROUND_LIMIT_REACHED: 'negotiation.error.roundLimitReached',
+  COMMIT_INTENT_MISMATCH: 'negotiation.error.commitIntentMismatch',
+  COMMIT_APPROVER_FORBIDDEN: 'negotiation.error.commitApproverForbidden',
+  COMMIT_EXPIRED: 'negotiation.error.commitExpired',
+  NO_PENDING_COMMIT: 'negotiation.error.notApproveCommit',
+  INVARIANT_VIOLATION: 'negotiation.error.invariantViolation',
 };
 
-export function publicError(error: unknown) {
+/** Localised message for a negotiation error code. */
+export function errorMessageFor(code: string, locale: Locale = DEFAULT_LOCALE) {
+  const key = ERROR_MESSAGE_KEYS[code];
+  return key ? translate(locale, key) : translate(locale, 'negotiation.error.generic');
+}
+
+export function publicError(error: unknown, locale: Locale = DEFAULT_LOCALE) {
   if (error instanceof NegotiationServiceError || error instanceof SafetyError) {
-    return { code: error.code, message: ERROR_MESSAGES[error.code] ?? '操作を完了できませんでした。' };
+    return { code: error.code, message: errorMessageFor(error.code, locale) };
   }
   if (error instanceof Error && error.message === 'DATABASE_REQUIRED_IN_PRODUCTION') {
-    return { code: 'PERSISTENCE_NOT_CONFIGURED', message: '交渉サービスの永続化設定が完了していません。' };
+    return { code: 'PERSISTENCE_NOT_CONFIGURED', message: translate(locale, 'api.persistenceNotConfigured') };
   }
   if (error instanceof Error && error.message === 'SESSION_VERSION_CONFLICT') {
-    return { code: 'SESSION_VERSION_CONFLICT', message: ERROR_MESSAGES.SESSION_VERSION_CONFLICT };
+    return { code: 'SESSION_VERSION_CONFLICT', message: errorMessageFor('SESSION_VERSION_CONFLICT', locale) };
   }
-  return { code: 'INTERNAL_ERROR', message: '一時的なエラーが発生しました。もう一度お試しください。' };
+  return { code: 'INTERNAL_ERROR', message: translate(locale, 'negotiation.error.internal') };
 }
 
 const FORBIDDEN = new Set(['SESSION_FORBIDDEN', 'NOT_YOUR_TURN', 'ACTION_FORBIDDEN_FOR_ROLE', 'COMMIT_APPROVER_FORBIDDEN']);

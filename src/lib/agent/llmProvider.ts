@@ -6,6 +6,7 @@ import { AgentAlternative, Listing, AgentActionType, ActionReasoning, Negotiatio
 import { normalizeNegotiationTerms } from '@/lib/negotiation/terms';
 import { PROMPT_DATA_BOUNDARY, promptVisibleHistory, promptVisibleMemory, singleLine } from '@/lib/agent/promptSafety';
 import { isProductionEnvironment } from '@/lib/runtime/environment';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n/config';
 
 export interface AgentPlanningResult {
   action: AgentActionType;
@@ -105,6 +106,70 @@ export interface PlannerUserPromptInput {
   lastOpponentOffer?: NegotiationOffer;
   acceptanceScore: number;
   memory?: NegotiationMemory;
+  /** Language of the negotiation; English prompts produce English reasoning. */
+  locale?: Locale;
+}
+
+/** English counterpart of the Japanese planner user prompt below. */
+function buildEnglishPlannerUserPrompt(input: PlannerUserPromptInput): string {
+  const { history, lastOpponentOffer, acceptanceScore, memory } = input;
+  return `Current negotiation history: ${JSON.stringify(promptVisibleHistory(history))}
+Latest counterparty offer: ${lastOpponentOffer ? `¥${lastOpponentOffer.price.toLocaleString()}` : 'none yet'}
+Acceptance score (not a calibrated probability): ${acceptanceScore}
+Prior negotiation notes: ${JSON.stringify(promptVisibleMemory(memory))}
+
+${PROMPT_DATA_BOUNDARY}
+
+Decide the best action and amount.`;
+}
+
+interface PlannerPromptContext {
+  role: 'buyer' | 'seller';
+  listing: Listing;
+  targetPrice: number;
+  reservationPrice: number;
+  batna: number;
+}
+
+/** English counterpart of the Japanese system prompt below. */
+function buildEnglishPlannerSystemPrompt(context: PlannerPromptContext): string {
+  const { role, listing, targetPrice, reservationPrice, batna } = context;
+  return `You are "Project BARGAIN", an autonomous price-negotiation agent on a C2C marketplace.
+Role: ${role === 'buyer' ? 'Buyer Agent' : 'Seller Agent'}
+Item: ${singleLine(listing.title, 80)} (list price: ¥${listing.price.toLocaleString()}, market median: ¥${listing.marketMedianPrice.toLocaleString()})
+Days listed: ${listing.daysListed}, likes: ${listing.likesCount}, demand: ${listing.recentDemand}
+Your target price: ¥${targetPrice.toLocaleString()}
+Your reservation price (Private State): ¥${reservationPrice.toLocaleString()} (${role === 'buyer' ? 'never exceed this amount' : 'never go below this amount'})
+Current BATNA (best alternative price): ¥${batna.toLocaleString()}
+
+Strict confidentiality rules:
+- explanationMessage is sent to the counterparty verbatim, so never include Private State, target price, reservation price, BATNA, win rate, or internal reasoning.
+- Only state the offered amount and publicly shareable terms.
+
+Choose one of the actions below and answer with valid JSON only.
+In addition to the primary plan, return up to three alternatives with a different price or terms:
+{
+  "action": "make_offer" | "counter_offer" | "accept_offer" | "reject_offer" | "wait",
+  "price": number,
+  "waitHours": number (only when action is "wait", 1-48),
+  "summaryReason": string (short reason for the decision),
+  "factors": string[] (3-4 factors behind the decision),
+  "explanationMessage": string (polite message sent to the counterparty),
+  "terms": {
+    "quantity": number,
+    "currency": string,
+    "taxIncluded": boolean,
+    "shippingCost": number,
+    "deliveryDays": number,
+    "paymentTerms": string,
+    "warranty": string,
+    "expiresAt": string,
+    "concessions": string[]
+  },
+  "alternatives": [
+    { "action": "counter_offer", "price": number, "rationale": string, "confidence": 0.0, "risks": string[], "terms": { ... } }
+  ]
+}`;
 }
 
 /**
@@ -113,6 +178,7 @@ export interface PlannerUserPromptInput {
  * importantly, what cannot.
  */
 export function buildPlannerUserPrompt(input: PlannerUserPromptInput): string {
+  if (input.locale === 'en') return buildEnglishPlannerUserPrompt(input);
   const { history, lastOpponentOffer, acceptanceScore, memory } = input;
   return `現在の交渉履歴: ${JSON.stringify(promptVisibleHistory(history))}
 直近の相手提示: ${lastOpponentOffer ? `¥${lastOpponentOffer.price.toLocaleString()}` : 'まだなし'}
@@ -263,7 +329,8 @@ export class LLMProviderService {
     acceptanceScore: number,
     batna: number,
     baseTerms?: Partial<NegotiationTerms>,
-    memory?: NegotiationMemory
+    memory?: NegotiationMemory,
+    locale: Locale = DEFAULT_LOCALE
   ): Promise<AgentPlanningResult> {
     if (plannerOverride) return plannerOverride({ role, listing, targetPrice, reservationPrice, history });
     const configuredModel = this.getModel();
@@ -276,7 +343,9 @@ export class LLMProviderService {
           .reverse()
           .find((o) => (role === 'buyer' ? o.senderRole.includes('seller') : o.senderRole.includes('buyer')));
 
-        const systemPrompt = `あなたはC2Cマーケットプレイスにおける自律型価格交渉AIエージェント「Project BARGAIN」です。
+        const systemPrompt = locale === 'en'
+          ? buildEnglishPlannerSystemPrompt({ role, listing, targetPrice, reservationPrice, batna })
+          : `あなたはC2Cマーケットプレイスにおける自律型価格交渉AIエージェント「Project BARGAIN」です。
 役割: ${role === 'buyer' ? '買い手代理 (Buyer Agent)' : '売り手代理 (Seller Agent)'}
 商品: ${singleLine(listing.title, 80)} (出品価格: ¥${listing.price.toLocaleString()}, 相場中央値: ¥${listing.marketMedianPrice.toLocaleString()})
 出品経過日数: ${listing.daysListed}日, いいね数: ${listing.likesCount}, 需要: ${listing.recentDemand}
@@ -313,7 +382,7 @@ export class LLMProviderService {
   ]
 }`;
 
-        const userPrompt = (promptOverride ?? buildPlannerUserPrompt)({ history, lastOpponentOffer, acceptanceScore, memory });
+        const userPrompt = (promptOverride ?? buildPlannerUserPrompt)({ history, lastOpponentOffer, acceptanceScore, memory, locale });
 
         // OpenAI's strict schema mode rejects `.optional()` without
         // `.nullable()`, and some gateways reject the dialect outright. The

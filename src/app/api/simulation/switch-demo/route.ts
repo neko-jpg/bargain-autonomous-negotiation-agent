@@ -1,19 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isProductionEnvironment } from '@/lib/runtime/environment';
 import { startSwitchDemo, advanceSwitchDemo, SWITCH_SCENARIO_STEPS } from '@/lib/simulation/switchScenario';
+import { apiErrorMessage } from '@/lib/i18n/api';
+import { getRequestLocale } from '@/lib/i18n/server';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
+  const locale = await getRequestLocale();
   if (isProductionEnvironment()) {
-    return NextResponse.json({ error: 'DEMO_DISABLED', message: '本番環境ではスクリプトデモを無効化しています。' }, { status: 404 });
+    return NextResponse.json({ error: 'DEMO_DISABLED', message: apiErrorMessage(locale, 'DEMO_DISABLED') }, { status: 404 });
   }
   return NextResponse.json({ session: startSwitchDemo(), totalSteps: SWITCH_SCENARIO_STEPS.length });
 }
 
 export async function POST(request: NextRequest) {
+  const locale = await getRequestLocale();
   if (isProductionEnvironment()) {
-    return NextResponse.json({ error: 'DEMO_DISABLED', message: '本番環境ではスクリプトデモを無効化しています。' }, { status: 404 });
+    return NextResponse.json({ error: 'DEMO_DISABLED', message: apiErrorMessage(locale, 'DEMO_DISABLED') }, { status: 404 });
   }
   const body = await request.json().catch(() => ({}));
 
@@ -29,7 +33,9 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'DEMO_ERROR';
-    const message = code === 'STEP_OUT_OF_BOUNDS' ? 'デモのステップが範囲外です。' : 'デモセッションを処理できませんでした。';
+    const message = code === 'STEP_OUT_OF_BOUNDS'
+      ? apiErrorMessage(locale, 'STEP_OUT_OF_BOUNDS')
+      : apiErrorMessage(locale, 'DEMO_FAILED');
     return NextResponse.json({ error: code, message }, { status: code === 'SESSION_NOT_FOUND' ? 404 : 422 });
   }
 }

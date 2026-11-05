@@ -1,6 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  /**
+   * Next 16 blocks `_next/*` dev asset requests whose Origin is not localhost.
+   * Without this, opening the dev server on 127.0.0.1 (or a LAN/preview host)
+   * returns 403 for the client chunks, so the page never hydrates and stays on
+   * the server-rendered loading screen. Add any other dev host you use here
+   * (hostname only, no scheme or port). Production is unaffected.
+   */
+  allowedDevOrigins: ['127.0.0.1'],
   async headers() {
     return [
       {

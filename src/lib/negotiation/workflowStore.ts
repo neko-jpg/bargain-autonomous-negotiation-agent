@@ -12,6 +12,8 @@ import {
 } from '@/types/negotiation';
 import { defaultNegotiationTerms, totalOfferCost } from '@/lib/negotiation/terms';
 import { describeExpiry, quoteUntrusted } from '@/lib/text/sanitize';
+import { DEFAULT_LOCALE } from '@/lib/i18n/config';
+import { translate, type TranslationKey, type TranslationParams } from '@/lib/i18n/dictionary';
 import { getDatabasePool } from '@/lib/negotiation/persistence';
 import { executeNegotiationAction, ServiceActor } from '@/lib/negotiation/service';
 import { hasLiveGrant, missingApprovals } from '@/lib/negotiation/commit';
@@ -134,14 +136,60 @@ function contractClauses(session: NegotiationSession, terms: NegotiationTerms, a
   const expiry = describeExpiry(terms.expiresAt);
   // Every value a counterparty can type is quoted, neutralised and labelled.
   // A clause body must never be able to look like a term this system wrote.
+  //
+  // Each clause keeps both its rendered text (for API clients and stored
+  // drafts) and the dictionary key + parameters, so the UI can re-render the
+  // same draft in whichever language the viewer is using.
+  const clause = (
+    id: string,
+    titleKey: TranslationKey,
+    bodyKey: TranslationKey,
+    params: TranslationParams = {}
+  ): ContractClause => ({
+    id,
+    title: translate(DEFAULT_LOCALE, titleKey, params),
+    body: translate(DEFAULT_LOCALE, bodyKey, params),
+    titleKey,
+    bodyKey,
+    params,
+  });
+
+  const shippingMethod = session.listing.shippingMethod;
+  const deliveryParams: TranslationParams = { days: terms.deliveryDays, shipping: terms.shippingCost };
+  if (shippingMethod) deliveryParams.method = quoteUntrusted(shippingMethod, 60);
+
   return [
-    { id: 'parties', title: '当事者', body: `買い手「あなた（買い手）」と売り手${quoteUntrusted(session.listing.sellerName, 60)}の間で作成される取引ドラフトです。` },
-    { id: 'listing', title: '商品・数量', body: `商品${quoteUntrusted(session.listing.title, 80)}を${terms.quantity}個、合意価格¥${agreedPrice.toLocaleString('ja-JP')}で取り扱います。` },
-    { id: 'amount', title: '支払総額', body: `商品価格、送料、税区分を反映した想定総額は¥${total.toLocaleString('ja-JP')}です。税区分は${terms.taxIncluded ? '税込' : '税別'}です。` },
-    { id: 'delivery', title: '納期・配送', body: `合意納期は${terms.deliveryDays}日以内、送料は¥${terms.shippingCost.toLocaleString('ja-JP')}、配送条件は${quoteUntrusted(session.listing.shippingMethod ?? '出品者指定', 60)}です。` },
-    { id: 'payment', title: '支払・保証', body: `支払条件は${quoteUntrusted(terms.paymentTerms, 80)}、保証条件は${quoteUntrusted(terms.warranty, 160)}です。いずれも相手方が入力した文面で、本システムは内容を検証していません。` },
-    { id: 'expiry', title: '有効期限', body: expiry ? `この条件の有効期限は${expiry}です。` : '有効期限は当事者の承認時点から個別に確認します。' },
-    { id: 'notice', title: 'ドラフトの扱い', body: 'この文書はBARGAINが生成した確認用ドラフトであり、人間による承認と実際の決済・発送手続きが完了するまでは法的拘束力を持つ契約として扱いません。' },
+    clause('parties', 'contract.clause.parties.title', 'contract.clause.parties.body', {
+      seller: quoteUntrusted(session.listing.sellerName, 60),
+    }),
+    clause('listing', 'contract.clause.listing.title', 'contract.clause.listing.body', {
+      title: quoteUntrusted(session.listing.title, 80),
+      quantity: terms.quantity,
+      price: agreedPrice,
+    }),
+    clause(
+      'amount',
+      'contract.clause.amount.title',
+      terms.taxIncluded ? 'contract.clause.amount.bodyIncluded' : 'contract.clause.amount.bodyExcluded',
+      { total }
+    ),
+    clause(
+      'delivery',
+      'contract.clause.delivery.title',
+      shippingMethod ? 'contract.clause.delivery.body' : 'contract.clause.delivery.bodyNoMethod',
+      deliveryParams
+    ),
+    clause('payment', 'contract.clause.payment.title', 'contract.clause.payment.body', {
+      payment: quoteUntrusted(terms.paymentTerms, 80),
+      warranty: quoteUntrusted(terms.warranty, 160),
+    }),
+    clause(
+      'expiry',
+      'contract.clause.expiry.title',
+      expiry ? 'contract.clause.expiry.body' : 'contract.clause.expiry.none',
+      expiry ? { date: expiry } : {}
+    ),
+    clause('notice', 'contract.clause.notice.title', 'contract.clause.notice.body'),
   ];
 }
 
