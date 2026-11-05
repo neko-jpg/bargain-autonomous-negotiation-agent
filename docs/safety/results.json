@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-11-05T07:18:34.856Z",
-  "commit": "a023565",
+  "generatedAt": "2026-11-05T07:22:27.105Z",
+  "commit": "54258da",
   "node": "v22.23.4",
   "allPassed": true,
   "checks": [
@@ -649,19 +649,19 @@
       ]
     },
     {
-      "id": "M17",
-      "title": "Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)",
-      "killed": true,
-      "caughtBy": [
-        "An offer made under an older, higher budget cannot be accepted after the budget is lowered"
-      ]
-    },
-    {
       "id": "M16",
       "title": "Operators may approve purchases",
       "killed": true,
       "caughtBy": [
         "An operator cannot approve a purchase (action or queue)"
+      ]
+    },
+    {
+      "id": "M17",
+      "title": "Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)",
+      "killed": true,
+      "caughtBy": [
+        "An offer made under an older, higher budget cannot be accepted after the budget is lowered"
       ]
     }
   ],
