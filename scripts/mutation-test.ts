@@ -72,13 +72,13 @@ export const MUTANTS: Mutant[] = [
   { id: 'M15', title: 'Superseded offers can be accepted', edits: [
     { file: 'src/lib/negotiation/service.ts', find: "if (latestPriced?.id !== target.id) throw new NegotiationServiceError('TARGET_OFFER_SUPERSEDED');", replace: '' },
   ] },
-  { id: 'M17', title: 'Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)', edits: [
-    { file: 'src/lib/negotiation/service.ts', find: "if (!isOfferStillBinding(session, target)) throw new NegotiationServiceError('TARGET_OFFER_WITHDRAWN');", replace: '' },
-    { file: 'src/lib/agent/negotiationGraph.ts', find: 'if (targetVersionMatches && isOfferStillBinding(session, target) && ', replace: 'if (targetVersionMatches && ' },
-  ] },
   { id: 'M16', title: 'Operators may approve purchases', edits: [
     { file: 'src/lib/negotiation/service.ts', find: "approve_commit: ['party'],", replace: "approve_commit: ['party', 'operator']," },
     { file: 'src/lib/negotiation/commit.ts', find: 'return requirement.approvers.find((approver) => approver.id === actor.id && approver.role === actor.role);', replace: "return actor.role === 'operator' ? requirement.approvers[0] : requirement.approvers.find((approver) => approver.id === actor.id && approver.role === actor.role);" },
+  ] },
+  { id: 'M17', title: 'Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)', edits: [
+    { file: 'src/lib/negotiation/service.ts', find: "if (!isOfferStillBinding(session, target)) throw new NegotiationServiceError('TARGET_OFFER_WITHDRAWN');", replace: '' },
+    { file: 'src/lib/agent/negotiationGraph.ts', find: 'if (targetVersionMatches && isOfferStillBinding(session, target) && ', replace: 'if (targetVersionMatches && ' },
   ] },
 ];
 

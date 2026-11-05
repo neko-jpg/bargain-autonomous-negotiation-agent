@@ -78,7 +78,7 @@ async function main() {
 |---|---|
 | Attack cases (in-memory store) | ${attacksMemory.results.filter((r) => r.passed).length}/${attacksMemory.results.length} blocked |
 | Attack cases (PostgreSQL via PGlite) | ${attacksPostgres.results.filter((r) => r.passed).length}/${attacksPostgres.results.length} blocked |
-| Regression tests for bugs found in review | ${postgres.results.filter((r) => r.passed).length}/${postgres.results.length} pass |
+| PostgreSQL regressions and durability (R1–R2 reproduce review bugs) | ${postgres.results.filter((r) => r.passed).length}/${postgres.results.length} pass |
 | Fuzzing (seed ${fuzzSeed}) | ${fuzz.metrics.steps.toLocaleString()} random steps over ${fuzzSessions.toLocaleString()} sessions, **${fuzz.metrics.violations.length} violations**, ${fuzz.metrics.unexpectedErrors.length} unexpected errors |
 | Bounded exhaustive exploration | all ${explorer.metrics.sequences.toLocaleString()} sequences of ${explorerDepth} moves (${explorer.metrics.alphabet}-move alphabet × ${explorer.metrics.startStates} start states), ${explorer.metrics.transitions.toLocaleString()} transitions, **${explorer.metrics.violations.length} violations** |
 | Mutation testing | ${mutants.length ? `${killed}/${mutants.length} injected safety bugs detected` : 'skipped'} |

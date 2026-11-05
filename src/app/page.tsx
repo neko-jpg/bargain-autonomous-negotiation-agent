@@ -303,7 +303,7 @@ export default function Home() {
               {activeScreen === 'negotiation-detail' && <NegotiationDetailView session={session} onBackToLive={() => navigate('negotiation-live')} />}
               {activeScreen === 'seller-dashboard' && sellerListing && <SellerDashboardView listing={sellerListing} session={sellerSession} onRerollListing={() => pickSellerListing(sellerListing.id)} onOpenListing={handleOpenSellerListing} onOpenNegotiation={handleOpenSellerNegotiation} />}
               {activeScreen === 'dashboard' && <DashboardView session={session} onSelectNegotiation={() => navigate('negotiation-live')} />}
-              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.viewer?.role === 'buyer' && 'maxPrice' in session.viewer.policy ? session.viewer.policy.maxPrice : undefined} sellerSurplus={session.viewerDealSummary?.sellerSurplus} negotiationId={session.id} onGoToDetail={() => navigate('negotiation-detail')} />}
+              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.viewer?.role === 'buyer' && 'maxPrice' in session.viewer.policy ? session.viewer.policy.maxPrice : undefined} sellerSurplus={session.viewerDealSummary?.sellerSurplus} negotiationId={session.id} commitReceipt={session.commitReceipt} onGoToDetail={() => navigate('negotiation-detail')} />}
             </motion.div>
           </AnimatePresence>
         </main>

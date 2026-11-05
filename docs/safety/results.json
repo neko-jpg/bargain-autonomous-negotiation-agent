@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-11-05T07:12:32.696Z",
-  "commit": "5395b9d",
+  "generatedAt": "2026-11-05T07:18:34.856Z",
+  "commit": "a023565",
   "node": "v22.23.4",
-  "allPassed": false,
+  "allPassed": true,
   "checks": [
     {
       "suite": "architecture",
@@ -201,6 +201,13 @@
       "detail": "executor calls=1"
     },
     {
+      "suite": "attacks",
+      "id": "A23",
+      "title": "An offer made under an older, higher budget cannot be accepted after the budget is lowered",
+      "passed": true,
+      "detail": "seller→TARGET_OFFER_WITHDRAWN, seller agent→counter_offer (status active)"
+    },
+    {
       "suite": "postgres",
       "id": "R1",
       "title": "time_skip with fractional days persists, and the shared catalog row is untouched",
@@ -390,11 +397,18 @@
       "detail": "executor calls=1"
     },
     {
+      "suite": "attacks-postgres",
+      "id": "A23",
+      "title": "An offer made under an older, higher budget cannot be accepted after the budget is lowered",
+      "passed": true,
+      "detail": "seller→TARGET_OFFER_WITHDRAWN, seller agent→counter_offer (status active)"
+    },
+    {
       "suite": "fuzz",
       "id": "F1",
       "title": "No invariant or oracle violation across the fuzz run",
-      "passed": false,
-      "detail": "O3 committed 64500 > buyer max 63600"
+      "passed": true,
+      "detail": "24526 steps"
     },
     {
       "suite": "fuzz",
@@ -415,14 +429,14 @@
       "id": "F4",
       "title": "The adversarial model really was dangerous (naive baseline is unsafe)",
       "passed": true,
-      "detail": "{\"overBudget\":421,\"belowFloor\":363,\"unapprovedCommit\":495,\"invalidNumber\":438}"
+      "detail": "{\"overBudget\":421,\"belowFloor\":364,\"unapprovedCommit\":494,\"invalidNumber\":436}"
     },
     {
       "suite": "fuzz",
       "id": "F5",
       "title": "The run reached real purchases through both approval paths",
       "passed": true,
-      "detail": "64 human-approved, 83 policy-approved"
+      "detail": "62 human-approved, 83 policy-approved"
     },
     {
       "suite": "explorer",
@@ -449,44 +463,43 @@
   "fuzz": {
     "seed": 20261105,
     "sessions": 2000,
-    "steps": 24558,
-    "accepted": 6314,
+    "steps": 24526,
+    "accepted": 6306,
     "blocked": {
-      "SESSION_NOT_APPROVE_COMMIT": 2369,
-      "KILL_SWITCH_ENGAGED": 405,
+      "SESSION_NOT_APPROVE_COMMIT": 2373,
+      "KILL_SWITCH_ENGAGED": 406,
       "SESSION_NOT_REJECT_COMMIT": 769,
-      "SESSION_NOT_TIME_SKIP": 1532,
-      "SESSION_FORBIDDEN": 4171,
-      "SESSION_NOT_RESUME": 1299,
+      "SESSION_NOT_TIME_SKIP": 1530,
+      "SESSION_FORBIDDEN": 4167,
+      "SESSION_NOT_RESUME": 1296,
       "ACTION_FORBIDDEN_FOR_ROLE": 2158,
-      "NOT_YOUR_TURN": 938,
-      "SESSION_NOT_HUMAN_ACCEPT": 438,
-      "SESSION_NOT_HUMAN_OFFER": 316,
-      "SESSION_NOT_AUTO_STEP": 1908,
-      "SESSION_NOT_UPDATE_POLICY": 62,
-      "SESSION_NOT_PAUSE": 208,
+      "NOT_YOUR_TURN": 940,
+      "SESSION_NOT_HUMAN_ACCEPT": 435,
+      "SESSION_NOT_HUMAN_OFFER": 313,
+      "SESSION_NOT_AUTO_STEP": 1900,
+      "SESSION_NOT_UPDATE_POLICY": 60,
+      "SESSION_NOT_PAUSE": 203,
       "TARGET_OFFER_NOT_OPPONENT": 152,
-      "OFFER_OUT_OF_POLICY": 297,
+      "OFFER_OUT_OF_POLICY": 294,
       "TARGET_OFFER_NOT_FOUND": 331,
-      "SESSION_NOT_RETRY_COMMIT": 787,
+      "SESSION_NOT_RETRY_COMMIT": 788,
       "COMMIT_INTENT_MISMATCH": 28,
       "COMMIT_APPROVER_FORBIDDEN": 34,
       "TARGET_OFFER_NOT_ACCEPTABLE": 14,
-      "TARGET_OFFER_SUPERSEDED": 28
+      "TARGET_OFFER_SUPERSEDED": 28,
+      "TARGET_OFFER_WITHDRAWN": 1
     },
-    "deals": 147,
-    "dealsHumanApproved": 64,
+    "deals": 145,
+    "dealsHumanApproved": 62,
     "dealsPolicyApproved": 83,
-    "violations": [
-      "O3 committed 64500 > buyer max 63600"
-    ],
+    "violations": [],
     "unexpectedErrors": [],
-    "plannerCalls": 2434,
+    "plannerCalls": 2430,
     "naive": {
       "overBudget": 421,
-      "belowFloor": 363,
-      "unapprovedCommit": 495,
-      "invalidNumber": 438
+      "belowFloor": 364,
+      "unapprovedCommit": 494,
+      "invalidNumber": 436
     },
     "gated": {
       "overBudget": 0,
@@ -511,7 +524,8 @@
       "title": "Drop the turn check (the review bypass: act for the other party)",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Buyer cannot accept or approve on the seller's behalf",
+        "Buyer cannot speak for the seller on the seller's turn"
       ]
     },
     {
@@ -519,7 +533,8 @@
       "title": "Drop the ownership check (act on anyone's negotiation)",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "A stranger cannot act on another user's negotiation (and nothing changes)",
+        "No invariant or oracle violation across the fuzz run"
       ]
     },
     {
@@ -527,7 +542,9 @@
       "title": "Gate executes even when approvals are missing",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "A grant signed with the wrong secret is rejected by the gate",
+        "A grant cannot be transplanted to a different intent",
+        "The same gate guards a different irreversible action (cloud deletion) without changes"
       ]
     },
     {
@@ -535,7 +552,7 @@
       "title": "Gate skips grant signature verification",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "A grant signed with the wrong secret is rejected by the gate"
       ]
     },
     {
@@ -543,7 +560,8 @@
       "title": "Grant is not bound to the intent hash",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "A grant cannot be transplanted to a different intent",
+        "The same gate guards a different irreversible action (cloud deletion) without changes"
       ]
     },
     {
@@ -551,7 +569,8 @@
       "title": "Gate forgets effects already executed (no exactly-once)",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Re-submitting the same intent to the gate never re-runs the effect",
+        "The same gate guards a different irreversible action (cloud deletion) without changes"
       ]
     },
     {
@@ -559,7 +578,8 @@
       "title": "Gate ignores the kill switch",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Kill switch halts agent steps and holds every purchase until released",
+        "All 972 move sequences of length 2 keep every safety property"
       ]
     },
     {
@@ -567,7 +587,8 @@
       "title": "Agent steps ignore the kill switch",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Kill switch halts agent steps and holds every purchase until released",
+        "No invariant or oracle violation across the fuzz run"
       ]
     },
     {
@@ -575,7 +596,8 @@
       "title": "Invariant monitor disabled",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Storage refuses a deal without an executed, matching receipt",
+        "A finished negotiation cannot be revived"
       ]
     },
     {
@@ -583,7 +605,7 @@
       "title": "Budget clamps removed from both the guardrail and the policy engine",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "No invariant or oracle violation across the fuzz run"
       ]
     },
     {
@@ -591,7 +613,7 @@
       "title": "Seller-side approval requirement dropped",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Buyer cannot accept or approve on the seller's behalf"
       ]
     },
     {
@@ -599,7 +621,7 @@
       "title": "Expired purchase intents can still be approved",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "An expired purchase intent cannot be approved"
       ]
     },
     {
@@ -607,7 +629,7 @@
       "title": "Approvals not bound to the pending intent (service and binding)",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Approval bound to a different intent hash is refused"
       ]
     },
     {
@@ -615,7 +637,7 @@
       "title": "Audit hash ignores the event payload",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "Tampering with the audit log is detected"
       ]
     },
     {
@@ -623,7 +645,15 @@
       "title": "Superseded offers can be accepted",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "A superseded offer cannot be accepted"
+      ]
+    },
+    {
+      "id": "M17",
+      "title": "Offers stay acceptable after their author lowers the budget (TOCTOU found by the fuzzer)",
+      "killed": true,
+      "caughtBy": [
+        "An offer made under an older, higher budget cannot be accepted after the budget is lowered"
       ]
     },
     {
@@ -631,7 +661,7 @@
       "title": "Operators may approve purchases",
       "killed": true,
       "caughtBy": [
-        "suite crashed"
+        "An operator cannot approve a purchase (action or queue)"
       ]
     }
   ],
