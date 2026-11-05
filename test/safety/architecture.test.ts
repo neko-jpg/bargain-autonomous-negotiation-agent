@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { Checker } from '../support/check';
-import { setAgentPlannerForTesting } from '../../src/lib/agent/llmProvider';
+import { setAgentPlannerForTesting, setPlannerPromptForTesting, setPlanObserverForTesting } from '../../src/lib/agent/llmProvider';
 import { setEffectExecutorForTesting } from '../../src/lib/negotiation/commit';
 import { setDatabasePoolForTesting } from '../../src/lib/negotiation/persistence';
 
@@ -59,12 +59,43 @@ export function runArchitectureSuite(): Checker {
   env.BARGAIN_ENV = 'production';
   const hooks: Array<[string, () => void]> = [
     ['setAgentPlannerForTesting', () => setAgentPlannerForTesting(() => { throw new Error('unreachable'); })],
+    ['setPlannerPromptForTesting', () => setPlannerPromptForTesting(() => 'unreachable')],
+    ['setPlanObserverForTesting', () => setPlanObserverForTesting(() => undefined)],
     ['setEffectExecutorForTesting', () => setEffectExecutorForTesting(undefined)],
     ['setDatabasePoolForTesting', () => setDatabasePoolForTesting(undefined)],
   ];
   const openHooks = hooks.filter(([, enable]) => { try { enable(); return true; } catch { return false; } }).map(([name]) => name);
   if (previous === undefined) delete env.BARGAIN_ENV; else env.BARGAIN_ENV = previous;
   check.record('S6', 'Test hooks are disabled in production', openHooks.length === 0, openHooks.join(', ') || `${hooks.length} hooks refuse`);
+
+  // S7 — the argument for this gate is that it is small enough to audit by hand.
+  // Budget it here so that stays true as the project grows. Simplicity is a
+  // property of the trusted core only; everything outside it may be as complex
+  // as it likes.
+  const tcb = files.filter((file) => /[\\/]src[\\/]lib[\\/]safety[\\/]/.test(file));
+  const tcbSources = tcb.map((file) => readFileSync(file, 'utf8'));
+  const tcbLines = tcbSources.join('\n').split('\n')
+    .filter((line) => line.trim() && !/^\s*(\/\/|\*|\/\*)/.test(line)).length;
+  const tcbExports = tcbSources.reduce((total, text) => total + (text.match(/^export /gm) ?? []).length, 0);
+  const forbidden = ['node:fs', 'node:net', 'node:http', 'node:child_process', 'Date.now', 'Math.random', 'process.env', '@/lib/negotiation', '@/lib/agent', '@/lib/engine', '@/app/'];
+  const leaks = tcbSources.flatMap((text, index) => forbidden
+    .filter((token) => text.includes(token))
+    .map((token) => `${relative(ROOT, tcb[index]).replace(/\\/g, '/')} → ${token}`));
+  check.record('S7', 'The trusted core stays within its size and dependency budget',
+    tcbLines <= 450 && tcbExports <= 30 && leaks.length === 0,
+    `${tcbLines} lines, ${tcbExports} exports, ${leaks.length ? leaks.join(', ') : 'no forbidden tokens'}`);
+
+  const bypassFlags = files
+    .filter((file) => /\.[jt]sx?$/.test(file))
+    .filter((file) => /process\.env\.[A-Z_]*(SKIP|DISABLE|BYPASS|IGNORE)[A-Z_]*(GATE|SAFETY|INVARIANT|COMMIT|KILL)/i.test(readFileSync(file, 'utf8')))
+    .map((file) => relative(ROOT, file).replace(/\\/g, '/'));
+  check.record('S8', 'No environment flag can disable the gate or the invariant monitor',
+    bypassFlags.length === 0, bypassFlags.join(', ') || '0 bypass flags in src');
+
+  const modelCallers = callers(/withStructuredOutput\(/, files);
+  check.record('S9', 'Exactly one module can call a language model',
+    modelCallers.length === 1 && modelCallers[0] === 'src/lib/agent/llmProvider.ts',
+    modelCallers.join(', ') || 'no model call sites');
 
   return check;
 }
