@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { Button as AriaButton } from 'react-aria-components';
 import { motion } from 'motion/react';
 import { CheckCircle2, Download, ExternalLink, PackageCheck, ShieldCheck, Star, Truck } from 'lucide-react';
-import { PublicDealSummary, Listing, NegotiationOfferView } from '@/types/negotiation';
+import { PublicCommitReceipt, PublicDealSummary, Listing, NegotiationOfferView } from '@/types/negotiation';
 import { NegotiationEventCard } from '@/components/NegotiationEventCard';
 import { ContractDraftPanel } from '@/components/ContractDraftPanel';
 
@@ -16,10 +16,11 @@ interface DealSummaryViewProps {
   buyerMaxPrice?: number;
   sellerSurplus?: number;
   negotiationId: string;
+  commitReceipt?: PublicCommitReceipt;
   onGoToDetail: () => void;
 }
 
-export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, sellerSurplus, negotiationId, onGoToDetail }: DealSummaryViewProps) {
+export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, sellerSurplus, negotiationId, commitReceipt, onGoToDetail }: DealSummaryViewProps) {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [submitted, setSubmitted] = useState(false);
@@ -66,7 +67,7 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
           <SummaryMetric tone="yellow" label="買い手の節約" value={`¥${(summary?.buyerSaved ?? 0).toLocaleString()}`} hint={`${summary?.buyerSavedPercent ?? 0}% OFF`} />
           <SummaryMetric tone="mint" label="売り手の余剰" value={sellerSurplus === undefined ? '非公開' : `+¥${sellerSurplus.toLocaleString()}`} hint={sellerSurplus === undefined ? '当事者のみ表示' : '最低価格との差'} />
           <SummaryMetric tone="surface" label="アクション" value={`${summary?.totalActions ?? offers.length}回`} hint="全イベント" />
-          <SummaryMetric tone="rose" label="人間の介入" value={`${summary?.humanMessagesCount ?? 0}回`} hint="自動交渉" />
+          <SummaryMetric tone="rose" label="購入確定の承認" value={commitReceipt ? (commitReceipt.authorizationMode === 'human' ? '人間が署名' : 'ポリシー') : '—'} hint={commitReceipt ? `Commit Gate · ${commitReceipt.intentHash.slice(0, 10)}…` : '確定前'} />
         </div>
       </motion.section>
 
@@ -100,7 +101,7 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
               <Line label="送料" value="送料込み" />
               <Line label="お支払い合計" value={`¥${(agreedPrice + fee).toLocaleString()}`} strong />
             </div>
-            <p className="deal-summary-note">この画面は購入確認用のモックです。実決済はまだ実行されません。</p>
+            <p className="deal-summary-note">購入確定はCommit Gateで1回だけ実行されました（実行先: {commitReceipt?.executor === 'webhook' ? '注文システムWebhook' : 'サンドボックス台帳'}）。実決済は行いません。</p>
           </section>
 
           <section className="deal-summary-panel deal-summary-history" aria-labelledby="audit-trail-title">

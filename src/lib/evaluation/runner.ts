@@ -1,5 +1,5 @@
 import { NegotiationGuardrails } from '@/lib/engine/guardrails';
-import { executeNegotiationAction } from '@/lib/negotiation/service';
+import { executeNegotiationAction, SYSTEM_ACTOR } from '@/lib/negotiation/service';
 import { findListing, createNegotiationSession } from '@/lib/negotiation/sessionStore';
 import { sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
 import { totalOfferCost } from '@/lib/negotiation/terms';
@@ -241,7 +241,7 @@ async function runScenario(scenario: EvaluationScenarioDefinition): Promise<Eval
         type: 'stop',
         expectedVersion: session.version ?? 0,
         idempotencyKey: `${session.id}-evaluation-stop`,
-      });
+      }, SYSTEM_ACTOR);
       const passed = stopped.status === 'rejected';
       return result(scenario, {
         passed,

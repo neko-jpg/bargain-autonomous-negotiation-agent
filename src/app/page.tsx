@@ -141,14 +141,11 @@ export default function Home() {
   }, [navigate]);
 
   const handleSelectListing = useCallback((listing: Listing) => {
-    // Change the visible detail optimistically. Session creation happens in the
-    // background so a card press never waits for the negotiation API.
+    // Browsing is read-only: a negotiation is created only when the user
+    // starts one, so out-of-order responses cannot swap the visible product.
     setSelectedListing(listing);
     navigate('product-detail');
-    void createSession(listing.id)
-      .then((nextSession) => persistSession(nextSession))
-      .catch((error: unknown) => toast.error(error instanceof Error ? error.message : '商品データを読み込めませんでした。'));
-  }, [createSession, navigate, persistSession]);
+  }, [navigate]);
 
   const handleSearch = useCallback(async (query: string) => {
     const response = await fetch(`/api/listings?q=${encodeURIComponent(query)}`, { cache: 'no-store' });
@@ -184,14 +181,14 @@ export default function Home() {
     try {
       const buyPolicy: BuyerPolicy = { targetPrice: price, maxPrice: price, deadlineDays: 1, autoPurchase: true, autoNegotiate: false, delegationLevel: 3 };
       const created = await createSession(activeListing.id, buyPolicy);
-      const offerResponse = await fetch(`/api/negotiations/${created.id}/actions`, {
+      const offerResponse = await fetchWithTimeout(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'human_offer', expectedVersion: created.version, idempotencyKey: `${created.id}-buy-offer`, offerPrice: price, messageText: '表示価格で購入します。' }),
       });
       const offerPayload = await offerResponse.json();
       if (!offerResponse.ok) throw new Error(offerPayload.message ?? '購入確認を作成できませんでした。');
-      const nextStep = await fetch(`/api/negotiations/${created.id}/actions`, {
+      const nextStep = await fetchWithTimeout(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'auto_step', expectedVersion: offerPayload.session.version, idempotencyKey: `${created.id}-buy-response` }),
@@ -200,7 +197,7 @@ export default function Home() {
       if (!nextStep.ok) throw new Error(nextPayload.message ?? '売り手側の応答を取得できませんでした。');
       persistSession(nextPayload.session);
       navigate(nextPayload.session.status === 'deal' ? 'deal-summary' : 'negotiation-live');
-      toast.success(nextPayload.session.status === 'deal' ? '購入確認を完了しました。' : '購入オファーを送信しました。');
+      toast.success(nextPayload.session.status === 'deal' ? '購入確認を完了しました。' : nextPayload.session.status === 'awaiting_commit' ? '合意しました。購入確定の承認をお願いします。' : '購入オファーを送信しました。');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '購入確認を作成できませんでした。');
     }
@@ -306,7 +303,7 @@ export default function Home() {
               {activeScreen === 'negotiation-detail' && <NegotiationDetailView session={session} onBackToLive={() => navigate('negotiation-live')} />}
               {activeScreen === 'seller-dashboard' && sellerListing && <SellerDashboardView listing={sellerListing} session={sellerSession} onRerollListing={() => pickSellerListing(sellerListing.id)} onOpenListing={handleOpenSellerListing} onOpenNegotiation={handleOpenSellerNegotiation} />}
               {activeScreen === 'dashboard' && <DashboardView session={session} onSelectNegotiation={() => navigate('negotiation-live')} />}
-              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.viewer?.role === 'buyer' && 'maxPrice' in session.viewer.policy ? session.viewer.policy.maxPrice : undefined} sellerSurplus={session.viewerDealSummary?.sellerSurplus} negotiationId={session.id} onGoToDetail={() => navigate('negotiation-detail')} />}
+              {activeScreen === 'deal-summary' && <DealSummaryView summary={session.dealSummary} listing={session.listing} offers={session.offers} buyerMaxPrice={session.viewer?.role === 'buyer' && 'maxPrice' in session.viewer.policy ? session.viewer.policy.maxPrice : undefined} sellerSurplus={session.viewerDealSummary?.sellerSurplus} negotiationId={session.id} commitReceipt={session.commitReceipt} onGoToDetail={() => navigate('negotiation-detail')} />}
             </motion.div>
           </AnimatePresence>
         </main>

@@ -3,7 +3,7 @@ import {
   listSessionEvents,
   subscribeSession,
 } from '@/lib/negotiation/sessionStore';
-import { getPersistedSession, isDatabaseConfigured } from '@/lib/negotiation/persistence';
+import { getDatabasePool, getPersistedSession, isDatabaseConfigured } from '@/lib/negotiation/persistence';
 import { requireActor, ActorAuthError } from '@/lib/auth/actor';
 import { toPublicSession, toViewerSession } from '@/lib/negotiation/sessionStore';
 
@@ -29,9 +29,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   const encoder = new TextEncoder();
+  let cleanup = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      // Cheap version probe; the full session is only loaded when it changed.
+      const probeVersion = async () => {
+        const database = getDatabasePool();
+        if (!database) return undefined;
+        const result = await database.query('select version from negotiations where id = $1', [id]);
+        return result.rows[0] ? Number(result.rows[0].version) : undefined;
+      };
       let heartbeat: ReturnType<typeof setInterval> | undefined;
       let poller: ReturnType<typeof setInterval> | undefined;
       let unsubscribe = () => {};
@@ -50,8 +58,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       };
       const send = (event: unknown, name = 'session.updated') => {
         if (closed) return;
-        controller.enqueue(encoder.encode(`event: ${name}\ndata: ${JSON.stringify(event)}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`event: ${name}\ndata: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          // The stream was cancelled underneath us; release timers and the subscription.
+          close();
+        }
       };
+      cleanup = close;
 
       listSessionEvents(id).slice(-1).forEach((event) => send({ ...event, session: current }, event.type));
       if (isDatabaseConfigured()) {
@@ -59,8 +73,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         // shared. Poll the authoritative version so another Worker instance
         // still reaches this open stream.
         poller = setInterval(() => {
-          void getPersistedSession(id).then((latest) => {
-            if (!latest || latest.version === lastVersion || closed) return;
+          void probeVersion().then(async (version) => {
+            if (version === undefined || version === lastVersion || closed) return;
+            const latest = await getPersistedSession(id);
+            if (!latest || closed) return;
             lastVersion = latest.version ?? lastVersion;
             const view = actor.role === 'operator' ? toPublicSession(latest) : toViewerSession(latest, actor.id, actor.role);
             send({ session: view }, 'session.updated');
@@ -73,7 +89,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       request.signal.addEventListener('abort', close);
     },
     cancel() {
-      // AbortSignal cleanup handles the normal browser path.
+      // Some runtimes cancel the stream without aborting request.signal.
+      cleanup();
     },
   });
 

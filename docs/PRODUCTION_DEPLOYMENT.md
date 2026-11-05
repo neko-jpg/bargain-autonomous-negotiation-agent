@@ -100,7 +100,24 @@ npx wrangler secret put BARGAIN_OPERATOR_TOKEN --env staging
 npx wrangler secret put BARGAIN_PRIVATE_STATE_KEY --env production
 npx wrangler secret put BARGAIN_SESSION_SECRET --env production
 npx wrangler secret put BARGAIN_OPERATOR_TOKEN --env production
+npx wrangler secret put BARGAIN_GRANT_SECRET --env production
 ```
+
+`BARGAIN_GRANT_SECRET` は購入承認（grant）の署名に使います。未設定の場合は
+`BARGAIN_SESSION_SECRET` を使い、どちらもない本番環境では購入確定が実行されません
+（fail closed）。
+
+購入確定を実際の注文・決済システムへ送る場合だけ、Webhookを設定します。
+未設定の場合はサンドボックス台帳に記録されるだけで、外部には何も送信しません。
+
+```powershell
+npx wrangler secret put BARGAIN_EFFECT_WEBHOOK_URL --env production
+npx wrangler secret put BARGAIN_EFFECT_WEBHOOK_SECRET --env production
+```
+
+緊急停止が必要な場合は、`BARGAIN_KILL_SWITCH=engaged` をWorker Variablesに設定して
+デプロイします。この停止はアプリからは解除できません。運用中の一時停止には、
+運用者トークン付きで `POST /api/safety/kill-switch` を使います。
 
 LLMを使う場合だけ、選択したプロバイダーのキーを登録します。キーなしでも決定論的な
 フォールバック戦略で動作します。

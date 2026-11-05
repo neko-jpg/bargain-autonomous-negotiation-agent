@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { decideApprovalTask } from '@/lib/negotiation/workflowStore';
 import { requireActor, ActorAuthError } from '@/lib/auth/actor';
+import { httpStatusForError, publicError } from '@/lib/negotiation/service';
 
 export const runtime = 'nodejs';
 
@@ -24,6 +25,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const task = await decideApprovalTask(id, body.decision, expectedVersion, body.idempotencyKey, actor);
     return NextResponse.json({ task });
   } catch (error) {
+    const safe = publicError(error);
+    if (safe.code !== 'INTERNAL_ERROR') {
+      return NextResponse.json({ error: safe.code, message: safe.message }, { status: httpStatusForError(safe.code) });
+    }
     const code = error instanceof Error ? error.message : 'INTERNAL_ERROR';
     const messages: Record<string, string> = {
       APPROVAL_NOT_FOUND: '承認タスクが見つかりません。',
@@ -33,8 +38,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       APPROVAL_EXPIRED: 'この承認タスクは期限切れです。',
       APPROVAL_SUBJECT_MISSING: '承認対象が見つかりません。',
       APPROVAL_SUBJECT_STALE: '承認対象が更新されています。再読み込みしてください。',
+      APPROVAL_KIND_RETIRED: 'この承認タスクは旧形式のため処理できません。',
     };
-    const status = code === 'APPROVAL_NOT_FOUND' ? 404 : code === 'APPROVAL_FORBIDDEN' ? 403 : code === 'APPROVAL_VERSION_CONFLICT' || code === 'APPROVAL_SUBJECT_STALE' ? 409 : 422;
+    const status = code === 'APPROVAL_NOT_FOUND' ? 404 : code === 'APPROVAL_FORBIDDEN' ? 403 : code === 'APPROVAL_VERSION_CONFLICT' || code === 'APPROVAL_SUBJECT_STALE' ? 409 : messages[code] ? 422 : 500;
     return NextResponse.json({ error: code, message: messages[code] ?? '承認処理に失敗しました。' }, { status });
   }
 }

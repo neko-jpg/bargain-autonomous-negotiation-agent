@@ -77,6 +77,11 @@ export const NegotiationActionRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('update_policy'),
     buyerPolicy: BuyerPolicyInputSchema,
   }),
+  // Commit actions are bound to the exact intent hash the human saw, not to
+  // the session version, so a concurrent unrelated update cannot void them.
+  versionedAction.extend({ type: z.literal('approve_commit'), intentHash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  versionedAction.extend({ type: z.literal('reject_commit'), intentHash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  versionedAction.extend({ type: z.literal('retry_commit') }),
 ]);
 
 export type CreateNegotiationRequest = z.infer<typeof CreateNegotiationRequestSchema>;

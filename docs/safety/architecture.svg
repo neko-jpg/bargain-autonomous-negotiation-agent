@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
+  <title id="title">BARGAIN Commit Gate architecture</title>
+  <desc id="desc">Untrusted model output becomes clamped proposals; agreement only creates a hashed intent; the Commit Gate executes the irreversible purchase once, and only with policy pre-authorization or signed human approval, while an invariant monitor and a hash-chained audit log guard every write.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#be123c"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="560" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="32" y="40" font-size="22" font-weight="700" fill="#0f172a">Agents propose. Only the Commit Gate can do something irreversible.</text>
+  <text x="32" y="64" font-size="13" fill="#475569">BARGAIN: autonomous negotiation with a single, verified path to the purchase.</text>
+
+  <!-- Untrusted zone -->
+  <rect x="24" y="88" width="250" height="300" rx="14" fill="#fff1f2" stroke="#fda4af" stroke-dasharray="6 5"/>
+  <text x="40" y="112" font-size="12" font-weight="700" fill="#be123c" letter-spacing="1">UNTRUSTED</text>
+
+  <rect x="44" y="126" width="210" height="68" rx="10" fill="#ffffff" stroke="#fb7185"/>
+  <text x="58" y="152" font-size="14" font-weight="700" fill="#0f172a">LLM / strategy planner</text>
+  <text x="58" y="173" font-size="12" fill="#475569">may be wrong, injected,</text>
+  <text x="58" y="188" font-size="12" fill="#475569">or adversarial</text>
+
+  <rect x="44" y="210" width="210" height="60" rx="10" fill="#ffffff" stroke="#fb7185"/>
+  <text x="58" y="236" font-size="14" font-weight="700" fill="#0f172a">Counterparty messages</text>
+  <text x="58" y="256" font-size="12" fill="#475569">free text = data, never orders</text>
+
+  <rect x="44" y="286" width="210" height="84" rx="10" fill="#ffffff" stroke="#fb7185"/>
+  <text x="58" y="312" font-size="14" font-weight="700" fill="#0f172a">Any API caller</text>
+  <text x="58" y="333" font-size="12" fill="#475569">buyer, seller, stranger,</text>
+  <text x="58" y="349" font-size="12" fill="#475569">operator, replayed or</text>
+  <text x="58" y="365" font-size="12" fill="#475569">concurrent requests</text>
+
+  <!-- Stage 1: guardrails -->
+  <rect x="312" y="126" width="196" height="108" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="326" y="150" font-size="12" font-weight="700" fill="#64748b" letter-spacing="1">1 · CLAMP</text>
+  <text x="326" y="172" font-size="14" font-weight="700" fill="#0f172a">Guardrails + policy</text>
+  <text x="326" y="192" font-size="12" fill="#475569">budget, floor, terms,</text>
+  <text x="326" y="208" font-size="12" fill="#475569">NaN, wait limits</text>
+  <text x="326" y="224" font-size="12" fill="#475569">(deterministic)</text>
+
+  <!-- Stage 2: service -->
+  <rect x="312" y="262" width="196" height="108" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="326" y="286" font-size="12" font-weight="700" fill="#64748b" letter-spacing="1">2 · AUTHORIZE</text>
+  <text x="326" y="308" font-size="14" font-weight="700" fill="#0f172a">Negotiation service</text>
+  <text x="326" y="328" font-size="12" fill="#475569">owner + own turn only,</text>
+  <text x="326" y="344" font-size="12" fill="#475569">idempotency, versions,</text>
+  <text x="326" y="360" font-size="12" fill="#475569">kill switch for agents</text>
+
+  <!-- Stage 3: intent -->
+  <rect x="546" y="194" width="186" height="108" rx="10" fill="#f0fdfa" stroke="#14b8a6"/>
+  <text x="560" y="218" font-size="12" font-weight="700" fill="#0f766e" letter-spacing="1">3 · AGREE ≠ BUY</text>
+  <text x="560" y="240" font-size="14" font-weight="700" fill="#0f172a">awaiting_commit</text>
+  <text x="560" y="260" font-size="12" fill="#475569">intent = exact price,</text>
+  <text x="560" y="276" font-size="12" fill="#475569">terms, parties → sha256</text>
+  <text x="560" y="292" font-size="12" fill="#475569">expires in 24h</text>
+
+  <!-- Stage 4: gate -->
+  <rect x="770" y="150" width="206" height="196" rx="12" fill="#0f766e"/>
+  <text x="786" y="176" font-size="12" font-weight="700" fill="#99f6e4" letter-spacing="1">4 · COMMIT GATE</text>
+  <text x="786" y="200" font-size="14" font-weight="700" fill="#ffffff">the only path to</text>
+  <text x="786" y="218" font-size="14" font-weight="700" fill="#ffffff">an irreversible effect</text>
+  <text x="786" y="246" font-size="12" fill="#ccfbf1">① kill switch released</text>
+  <text x="786" y="266" font-size="12" fill="#ccfbf1">② policy pre-authorizes, or</text>
+  <text x="800" y="282" font-size="12" fill="#ccfbf1">every required human signed</text>
+  <text x="800" y="298" font-size="12" fill="#ccfbf1">this exact intent hash</text>
+  <text x="786" y="318" font-size="12" fill="#ccfbf1">③ exactly once (outbox key)</text>
+  <text x="786" y="336" font-size="11" fill="#99f6e4">src/lib/safety/commitGate.ts</text>
+
+  <!-- Effect -->
+  <rect x="770" y="388" width="206" height="72" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="786" y="414" font-size="14" font-weight="700" fill="#0f172a">Purchase effect</text>
+  <text x="786" y="434" font-size="12" fill="#475569">sandbox ledger, or signed</text>
+  <text x="786" y="450" font-size="12" fill="#475569">webhook to an order system</text>
+
+  <!-- Humans -->
+  <rect x="546" y="88" width="186" height="74" rx="10" fill="#ffffff" stroke="#0f766e"/>
+  <text x="560" y="112" font-size="14" font-weight="700" fill="#0f172a">Human approver</text>
+  <text x="560" y="132" font-size="12" fill="#475569">sees the exact intent,</text>
+  <text x="560" y="148" font-size="12" fill="#475569">signs a 15-min grant</text>
+
+  <rect x="546" y="330" width="186" height="74" rx="10" fill="#ffffff" stroke="#be123c"/>
+  <text x="560" y="354" font-size="14" font-weight="700" fill="#0f172a">Operator</text>
+  <text x="560" y="374" font-size="12" fill="#475569">kill switch, stop, reject:</text>
+  <text x="560" y="390" font-size="12" fill="#475569">can halt, never spend</text>
+
+  <!-- Arrows -->
+  <path d="M254 160 L304 170" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="258" y="150" font-size="11" fill="#334155">proposals</text>
+  <path d="M254 240 L304 210" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M254 328 L304 318" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M410 234 L410 254" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M508 300 L538 270" stroke="#334155" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <text x="508" y="320" font-size="11" fill="#334155">acceptance</text>
+  <path d="M732 248 L762 248" stroke="#0f766e" stroke-width="2" fill="none" marker-end="url(#arrowTeal)"/>
+  <path d="M732 125 C 760 125, 770 135, 820 144" stroke="#0f766e" stroke-width="2" fill="none" marker-end="url(#arrowTeal)"/>
+  <text x="740" y="112" font-size="11" fill="#0f766e">signed grant</text>
+  <path d="M732 367 C 760 367, 768 360, 790 352" stroke="#be123c" stroke-width="2" fill="none" stroke-dasharray="5 4" marker-end="url(#arrowRose)"/>
+  <text x="736" y="390" font-size="11" fill="#be123c">halt</text>
+  <path d="M873 346 L873 380" stroke="#0f766e" stroke-width="2" fill="none" marker-end="url(#arrowTeal)"/>
+  <text x="882" y="368" font-size="11" fill="#0f766e">once</text>
+
+  <!-- Storage band -->
+  <rect x="24" y="480" width="952" height="60" rx="12" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="44" y="505" font-size="13" font-weight="700" fill="#0f172a">Single write path</text>
+  <text x="44" y="525" font-size="12" fill="#475569">every state change → 8 runtime invariants → hash-chained audit log → PostgreSQL (outbox primary key = intent hash)</text>
+  <path d="M410 370 L410 474" stroke="#64748b" stroke-width="1.4" fill="none" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+  <path d="M873 460 L873 476" stroke="#64748b" stroke-width="1.4" fill="none" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
+</svg>

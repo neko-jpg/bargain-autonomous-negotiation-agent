@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { NegotiationActionRequestSchema } from '@/lib/negotiation/schemas';
-import { executeNegotiationAction, publicError } from '@/lib/negotiation/service';
+import { executeNegotiationAction, httpStatusForError, publicError } from '@/lib/negotiation/service';
 import { requireActor, ActorAuthError } from '@/lib/auth/actor';
 
 export const runtime = 'nodejs';
@@ -25,7 +25,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ session });
   } catch (error) {
     const safe = publicError(error);
-    const status = safe.code === 'SESSION_NOT_FOUND' ? 404 : safe.code === 'SESSION_FORBIDDEN' ? 403 : safe.code === 'SESSION_VERSION_CONFLICT' ? 409 : safe.code === 'PERSISTENCE_NOT_CONFIGURED' ? 503 : 422;
-    return NextResponse.json({ error: safe.code, message: safe.message }, { status });
+    return NextResponse.json({ error: safe.code, message: safe.message }, { status: httpStatusForError(safe.code) });
   }
 }

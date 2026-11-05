@@ -22,7 +22,11 @@
     "test": "tsx test/run_all_tests.ts",
     "audit": "npm audit --omit=dev",
     "catalog:sync": "node scripts/sync-curated-catalog.mjs",
-    "catalog:verify": "tsx test/catalog.test.ts"
+    "catalog:verify": "tsx test/catalog.test.ts",
+    "safety:verify": "tsx scripts/safety-report.ts",
+    "safety:report": "tsx scripts/safety-report.ts --write",
+    "safety:mutation": "tsx scripts/mutation-test.ts",
+    "example:reuse": "tsx examples/cloud-cleanup/run.ts"
   },
   "dependencies": {
     "@langchain/core": "1.2.8",
@@ -56,6 +60,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.10",
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20.17.10",
     "@types/pg": "^8.23.1",

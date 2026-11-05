@@ -43,9 +43,9 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     }
   }
   try {
-    const draft = await saveContractDraft(buildContractDraft(session));
+    const { draft, created } = await saveContractDraft(buildContractDraft(session));
     const approval = await createContractApproval(session, draft);
-    return NextResponse.json({ draft, approval }, { status: draft.version === 1 ? 201 : 200 });
+    return NextResponse.json({ draft, approval }, { status: created ? 201 : 200 });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'INTERNAL_ERROR';
     const message = code === 'CONTRACT_REQUIRES_DEAL'

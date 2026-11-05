@@ -103,7 +103,8 @@ export function startSwitchDemo() {
 
 export function advanceSwitchDemo(sessionId: string, stepIndex: number) {
   const session = getSession(sessionId);
-  if (!session) throw new Error('SESSION_NOT_FOUND');
+  // Only sessions created by startSwitchDemo() can be driven by the script.
+  if (!session || !session.scriptedDemo) throw new Error('SESSION_NOT_FOUND');
   if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex >= SWITCH_SCENARIO_STEPS.length) {
     throw new Error('STEP_OUT_OF_BOUNDS');
   }

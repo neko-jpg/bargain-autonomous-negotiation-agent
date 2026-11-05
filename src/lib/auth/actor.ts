@@ -57,7 +57,12 @@ function cookieValue(request: Request, name: string) {
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${name}=`))
     ?.slice(name.length + 1);
-  return value ? decodeURIComponent(value) : undefined;
+  if (!value) return undefined;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ActorAuthError('INVALID_ACTOR');
+  }
 }
 
 function actorRole(request: Request): PartyRole {
@@ -79,9 +84,11 @@ export function getActor(request: Request): ActorContext | undefined {
   const headerIdentity = areDemoHeadersEnabled() ? request.headers.get('x-bargain-user-id')?.trim() : undefined;
   const rawCookie = cookieValue(request, ACTOR_COOKIE);
   const id = rawCookie ? decodeActorCookie(rawCookie) : headerIdentity;
-  if (!id) return undefined;
+  const role = actorRole(request);
+  // A valid operator token authenticates on its own (CLI / runbook access).
+  if (!id) return role === 'operator' ? { id: 'operator', role } : undefined;
   if (!SAFE_ACTOR_ID.test(id)) throw new ActorAuthError('INVALID_ACTOR');
-  return { id, role: actorRole(request) };
+  return { id, role };
 }
 
 export function requireActor(request: Request): ActorContext {
@@ -91,7 +98,15 @@ export function requireActor(request: Request): ActorContext {
 }
 
 export function createActor(request: Request): { actor: ActorContext; isNew: boolean } {
-  const existing = getActor(request);
+  let existing: ActorContext | undefined;
+  try {
+    existing = getActor(request);
+  } catch (error) {
+    // A stale or forged cookie (e.g. after a secret rotation) must not lock
+    // the browser out: issue a fresh identity that replaces the cookie. The
+    // old identity's negotiations stay inaccessible, which is the safe side.
+    if (!(error instanceof ActorAuthError) || error.code !== 'INVALID_ACTOR') throw error;
+  }
   if (existing) return { actor: existing, isNew: false };
   sessionSecret();
   return { actor: { id: `user-${randomUUID()}`, role: actorRole(request) }, isNew: true };

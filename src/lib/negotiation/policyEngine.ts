@@ -40,6 +40,41 @@ export function effectiveSellerFloor(policy: SellerPolicy) {
   return Math.max(policy.minPrice, (policy.costPrice ?? 0) + (policy.minimumProfit ?? 0));
 }
 
+/**
+ * An offer binds only while it still fits its author's *current* policy. When
+ * the buyer lowers its budget, its older, higher offers are withdrawn: the
+ * counterparty can no longer accept them (found by the fuzzer, see A23).
+ */
+export function isOfferStillBinding(session: { buyerPolicy: BuyerPolicy; sellerPolicy: SellerPolicy; listing: Listing }, offer: { senderRole: string; price: number; terms?: NegotiationTerms }) {
+  if (offer.senderRole.startsWith('buyer')) {
+    const total = totalOfferCost(offer.price, normalizeNegotiationTerms(session.listing, offer.terms));
+    return total <= session.buyerPolicy.maxPrice && offer.price <= session.listing.price;
+  }
+  return offer.price >= effectiveSellerFloor(session.sellerPolicy);
+}
+
+/**
+ * Single source of truth for "does the buyer's human have to approve this
+ * purchase?". Returns the reason, or undefined when policy pre-authorizes it.
+ * The reason mentions private limits, so show it only to the buyer.
+ */
+export function buyerCommitApprovalReason(policy: BuyerPolicy, total: number): string | undefined {
+  if (total > policy.maxPrice) return '総額が上限価格を超えるため、人間の承認が必要です。';
+  if (!policy.autoPurchase) return '自動購入がオフのため、購入確定には人間の承認が必要です。';
+  const limit = policy.autoApprovalMaxPrice ?? policy.maxPrice;
+  if (total > limit) return '総額が自動承認上限を超えるため、人間の承認が必要です。';
+  return undefined;
+}
+
+/** Seller-side counterpart of buyerCommitApprovalReason. */
+export function sellerCommitApprovalReason(policy: SellerPolicy, price: number): string | undefined {
+  const floor = effectiveSellerFloor(policy);
+  if (price < floor) return '売り手の実効最低価格を下回るため、人間の承認が必要です。';
+  if (!policy.autoAccept) return '自動受諾がオフのため、売却確定には人間の承認が必要です。';
+  if (price < (policy.autoApprovalMinPrice ?? floor)) return '自動承認下限を下回るため、人間の承認が必要です。';
+  return undefined;
+}
+
 export function sanitizeOfferByPolicy(
   role: 'buyer' | 'seller',
   listing: Listing,
@@ -87,9 +122,8 @@ export function sanitizeOfferByPolicy(
       addCorrection(corrections, '出品価格を超えないように補正しました。');
     }
 
-    const approvalLimit = buyerPolicy.autoApprovalMaxPrice ?? buyerPolicy.maxPrice;
     const requiresHumanApproval = action === 'accept_offer'
-      ? !buyerPolicy.autoPurchase || totalOfferCost(sanitizedPrice, terms) > approvalLimit
+      ? buyerCommitApprovalReason(buyerPolicy, totalOfferCost(sanitizedPrice, terms)) !== undefined
       : false;
     return {
       price: sanitizedPrice,
@@ -131,9 +165,8 @@ export function sanitizeOfferByPolicy(
     addCorrection(corrections, `売り手の実効最低価格¥${floor.toLocaleString()}を下回らないように補正しました。`);
   }
 
-  const approvalFloor = sellerPolicy.autoApprovalMinPrice ?? floor;
   const requiresHumanApproval = action === 'accept_offer'
-    ? !sellerPolicy.autoAccept || sanitizedPrice < approvalFloor
+    ? sellerCommitApprovalReason(sellerPolicy, sanitizedPrice) !== undefined
     : false;
   return {
     price: sanitizedPrice,
