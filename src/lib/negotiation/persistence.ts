@@ -3,6 +3,7 @@ import { Client, Pool } from 'pg';
 import type { QueryResult, QueryResultRow } from 'pg';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { isProductionEnvironment } from '@/lib/runtime/environment';
+import type { Locale } from '@/lib/i18n/config';
 import {
   BuyerPolicy,
   Listing,
@@ -446,7 +447,7 @@ export async function createPersistedNegotiationSession(
   listing: Listing,
   buyerPolicy?: BuyerPolicy,
   buyerTerms?: Partial<NegotiationTerms>,
-  owners?: { buyerId?: string; sellerId?: string }
+  owners?: { buyerId?: string; sellerId?: string; locale?: Locale }
 ) {
   assertPersistenceReady();
   const session = createNegotiationSession(listing, buyerPolicy, buyerTerms, owners);
