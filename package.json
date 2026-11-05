@@ -25,8 +25,11 @@
     "catalog:verify": "tsx test/catalog.test.ts",
     "safety:verify": "tsx scripts/safety-report.ts",
     "safety:report": "tsx scripts/safety-report.ts --write",
+    "safety:llm": "tsx scripts/red-team-llm.ts",
+    "safety:llm:unprotected": "tsx scripts/red-team-llm-unprotected.ts",
     "safety:mutation": "tsx scripts/mutation-test.ts",
-    "example:reuse": "tsx examples/cloud-cleanup/run.ts"
+    "example:reuse": "tsx examples/cloud-cleanup/run.ts",
+    "provider:check": "tsx scripts/check-provider.ts"
   },
   "dependencies": {
     "@langchain/core": "1.2.8",
