@@ -107,6 +107,26 @@ The app works without an LLM key: a deterministic strategy engine stands in.
 To use OpenAI or Gemini, set the keys in `.env.local`
 (see [.env.local.example](.env.local.example)).
 
+## Language (日本語 / English)
+
+The interface is fully bilingual and switches instantly from the **JA / EN**
+control in the header. The choice is stored in the `bargain_locale` cookie, so
+server-rendered text, API error messages and generated negotiation messages
+follow the same language.
+
+- UI strings live in `src/lib/i18n/dictionaries/{ja,en}.ts`. `ja` is the source
+  of truth; `en` is typed against it, so a missing translation fails the build.
+- Negotiation messages, guardrail reasons and contract clauses are stored as a
+  dictionary key plus parameters, so switching language re-renders existing
+  history rather than leaving stale text behind.
+- A negotiation records the language it started in and the planner prompt uses
+  it, so English sessions get English agent reasoning.
+- Catalog content (product titles, descriptions, seller names) stays in
+  Japanese: it is marketplace data, not UI copy.
+
+See [docs/I18N.md](docs/I18N.md) for the key conventions, placeholder syntax
+and how to add a language.
+
 ## Configuration
 
 | Variable | Purpose |
@@ -134,7 +154,7 @@ src/app/                 Next.js UI and API routes
 test/safety/             Attack suite, fuzzer, exhaustive explorer, PostgreSQL suite, architecture tests
 scripts/                 Safety report and mutation testing
 examples/cloud-cleanup/  The gate reused for a different irreversible action
-docs/                    Safety case, results, schema, deployment
+docs/                    Safety case, results, schema, deployment, i18n
 ```
 
 ## Scope
