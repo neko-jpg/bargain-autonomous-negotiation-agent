@@ -55,7 +55,6 @@ function buyerPolicy(overrides: Partial<BuyerPolicy> = {}): BuyerPolicy {
     deadlineDays: 3,
     autoPurchase: false,
     autoNegotiate: true,
-    delegationLevel: 2,
     requiredCurrency: 'JPY',
     requireTaxIncluded: true,
     maxDeliveryDays: 3,

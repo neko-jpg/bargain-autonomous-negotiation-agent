@@ -18,7 +18,8 @@ export type InvariantId =
   | 'INV-05-party-binding'
   | 'INV-06-deal-requires-executed-commit'
   | 'INV-07-intent-integrity'
-  | 'INV-08-kill-switch-halts-agents';
+  | 'INV-08-kill-switch-halts-agents'
+  | 'INV-09-unit-scope';
 
 export const INVARIANTS: Record<InvariantId, string> = {
   'INV-01-terminal-final': 'A session in deal or rejected never changes again.',
@@ -29,6 +30,7 @@ export const INVARIANTS: Record<InvariantId, string> = {
   'INV-06-deal-requires-executed-commit': 'A session becomes deal only from awaiting_commit, and only with a receipt whose intent hash matches the pending intent and is executed in the effect ledger.',
   'INV-07-intent-integrity': 'A pending commit always hashes to its recorded intent hash and is derived from the latest acceptance.',
   'INV-08-kill-switch-halts-agents': 'While the kill switch is engaged, no agent-authored offer is written (monitor) and the gate executes no new effect (Commit Gate).',
+  'INV-09-unit-scope': 'No offer or agreement covers more units than the listing has in stock; the agreed price is the price of that whole lot, never a unit price.',
 };
 
 export interface TransitionContext {
@@ -63,6 +65,11 @@ export async function checkTransition(prev: NegotiationSession, next: Negotiatio
   for (const offer of added) {
     const side = offer.senderRole.startsWith('buyer') ? 'buyer' : 'seller';
     if (PRICED_ACTIONS.has(offer.actionType)) {
+      const units = offer.terms?.quantity ?? 1;
+      const stock = typeof next.listing.inventoryQuantity === 'number' && next.listing.inventoryQuantity > 0
+        ? next.listing.inventoryQuantity
+        : 1;
+      if (units > stock) fail('INV-09-unit-scope', `${offer.id} quantity ${units} > stock ${stock}`);
       // An agreement must fit both sides' current policies, whoever accepts.
       if (offer.actionType === 'accept_offer') {
         const total = totalOfferCost(offer.price, offer.terms ?? defaultNegotiationTerms(next.listing));

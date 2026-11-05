@@ -13,7 +13,6 @@ export function runPolicyEngineTests(): boolean {
     maxPrice: 50_000,
     deadlineDays: 3,
     autoPurchase: false,
-    delegationLevel: 2,
     maxDeliveryDays: 3,
     maxShippingCost: 5_000,
     requiredCurrency: 'JPY',

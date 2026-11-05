@@ -98,6 +98,8 @@ function assertActorAllowed(session: NegotiationSession, type: ActionType, actor
 }
 
 const terminalStatuses = new Set<NegotiationSession['status']>(['deal', 'rejected']);
+/** A negotiation that never converges is a control problem even when every step is legal. */
+const MAX_NEGOTIATION_ROUNDS = 40;
 const STATUS_RULES: Record<ActionType, NegotiationSession['status'][]> = {
   auto_step: ['active'],
   time_skip: ['waiting'],
@@ -230,6 +232,12 @@ async function settlePendingCommit(session: NegotiationSession, actor: ServiceAc
   if (Date.parse(pending.expiresAt) <= Date.now()) {
     return commitPersistedSession({ ...closePendingCommit(session, 'expired'), status: 'paused_for_human' }, session.version ?? 0, 'commit.expired', { actor: commitActor });
   }
+  // Old persisted intents may have been policy-authorized before buyer approval
+  // became mandatory. Never execute them under the obsolete requirement.
+  if (pending.requirement.mode !== 'human' || !pending.requirement.approvers.some((approver) => approver.id === session.buyerId && approver.role === 'buyer')) {
+    if (pending.blockedReason === 'COMMIT_REQUIRES_NEW_APPROVAL') return session;
+    return commitPersistedSession({ ...session, pendingCommit: { ...pending, blockedReason: 'COMMIT_REQUIRES_NEW_APPROVAL' } }, session.version ?? 0, 'commit.blocked', { actor: commitActor });
+  }
   if (missingApprovals(session).length > 0) return session;
   try {
     const { receipt } = await executeIrreversibleEffect(pending.intent, pending.requirement, pending.grants, gateDependencies());
@@ -277,6 +285,9 @@ export async function executeNegotiationAction(
 
     switch (request.type) {
       case 'auto_step': {
+        // A session that never converges is a control problem even when every
+        // single step is legal. Cap the agent rather than trusting it to stop.
+        if (current.offers.length >= MAX_NEGOTIATION_ROUNDS) throw new NegotiationServiceError('ROUND_LIMIT_REACHED');
         next = await runNegotiationStep(current, undefined, { threadId: current.threadId });
         break;
       }
@@ -422,6 +433,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   TARGET_OFFER_WITHDRAWN: '提示者のポリシー変更により、このオファーは取り下げられています。',
   OFFER_OUT_OF_POLICY: '価格または取引条件が設定したポリシーの範囲外です。',
   SESSION_ALREADY_FINISHED: 'この交渉はすでに終了しています。',
+  ROUND_LIMIT_REACHED: '交渉の上限ラウンド数に達しました。人間の確認が必要です。',
   COMMIT_INTENT_MISMATCH: '購入内容が更新されています。最新の内容を確認してください。',
   COMMIT_APPROVER_FORBIDDEN: 'この購入確定を承認する権限がありません。',
   COMMIT_EXPIRED: '購入確定の有効期限が切れています。',

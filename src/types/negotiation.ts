@@ -1,7 +1,5 @@
 import type { ApprovalGrant, AuthorizationRequirement, EffectReceipt, IrreversibleIntent } from '@/lib/safety/commitGate';
 
-export type DelegationLevel = 1 | 2 | 3; // 1: 提案のみ, 2: 交渉代行(購入前確認), 3: 完全委任(自動購入)
-
 export type UrgencyLevel = 'low' | 'medium' | 'high';
 
 export interface Listing {
@@ -46,7 +44,6 @@ export interface BuyerPolicy {
   maxPrice: number; // ※Private State
   deadlineDays: number;
   autoPurchase: boolean;
-  delegationLevel: DelegationLevel;
   autoNegotiate?: boolean;
   maxDeliveryDays?: number;
   maxShippingCost?: number;
@@ -449,7 +446,7 @@ export interface ContractDraft {
 export interface AgentRunRecord {
   id: string;
   negotiationId: string;
-  provider: 'google' | 'openai' | 'heuristic';
+  provider: 'google' | 'openai' | 'opencode' | 'heuristic';
   model?: string;
   latencyMs: number;
   fallback: boolean;

@@ -82,7 +82,6 @@ export function createNegotiationSession(
         deadlineDays: 3,
         autoPurchase: false,
         autoNegotiate: true,
-        delegationLevel: 2,
         maxDeliveryDays: 7,
         maxShippingCost: 0,
         minQuantity: 1,

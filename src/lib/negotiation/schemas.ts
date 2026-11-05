@@ -21,7 +21,6 @@ export const BuyerPolicyInputSchema = z
     maxPrice: integerYen,
     deadlineDays: z.number().finite().int().min(1).max(30),
     autoPurchase: z.boolean(),
-    delegationLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     autoNegotiate: z.boolean().optional(),
     maxDeliveryDays: z.number().finite().int().min(1).max(365).optional(),
     maxShippingCost: integerYen.optional(),

@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Checker } from '../support/check';
-import { act, executedEffects, Fixture, newFixture, resetKillSwitch, seedSellerOffer, selectPlanner } from './harness';
+import { act, demoListing, executedEffects, Fixture, newFixture, resetKillSwitch, seedSellerOffer, selectPlanner } from './harness';
 import { commitPersistedSession, getPersistedSession, listAuditEntries } from '../../src/lib/negotiation/persistence';
 import { decideApprovalTask, listApprovalTasks } from '../../src/lib/negotiation/workflowStore';
 import { executeIrreversibleEffect, hashIntent, issueApprovalGrant, MemoryEffectLedger } from '../../src/lib/safety/commitGate';
@@ -11,6 +11,7 @@ import { setKillSwitch } from '../../src/lib/negotiation/safetyControls';
 import { tamperMemoryAuditEntryForTesting, verifyAuditChain } from '../../src/lib/negotiation/auditLog';
 import { hmacHex } from '../../src/lib/safety/hash';
 import { SYSTEM_ACTOR } from '../../src/lib/negotiation/service';
+import { defaultNegotiationTerms } from '../../src/lib/negotiation/terms';
 import { NegotiationSession } from '../../src/types/negotiation';
 import { isDatabaseConfigured } from '../../src/lib/negotiation/persistence';
 
@@ -64,7 +65,7 @@ export async function runAttackSuite(): Promise<Checker> {
   // A03 — seller rewrites the buyer's budget.
   {
     const f = await newFixture({ persisted });
-    const outcome = await act(f.session.id, { type: 'update_policy', buyerPolicy: { targetPrice: 64_000, maxPrice: 64_500, deadlineDays: 3, autoPurchase: true, delegationLevel: 3 } }, f.seller);
+    const outcome = await act(f.session.id, { type: 'update_policy', buyerPolicy: { targetPrice: 64_000, maxPrice: 64_500, deadlineDays: 3, autoPurchase: true } }, f.seller);
     check.record('A03', 'Seller cannot change the buyer\'s policy', !outcome.ok && outcome.code === 'ACTION_FORBIDDEN_FOR_ROLE', outcome.ok ? 'accepted' : outcome.code);
   }
 
@@ -347,9 +348,9 @@ export async function runAttackSuite(): Promise<Checker> {
     const deps = { ledger, executor, isKillSwitchEngaged: async () => false, secret: grantSecret() };
     const requirement = { mode: 'policy' as const, policyId: 'test', reason: 'test' };
     const first = await executeIrreversibleEffect(intent, requirement, [], deps);
-    const second = await executeIrreversibleEffect(intent, requirement, [], deps);
+    const second = await executeIrreversibleEffect(intent, requirement, [], deps).catch(() => undefined);
     check.record('A22', 'Re-submitting the same intent to the gate never re-runs the effect',
-      calls === 1 && !first.duplicate && second.duplicate && second.receipt.effectId === first.receipt.effectId, `executor calls=${calls}`);
+      calls === 1 && !first.duplicate && second?.duplicate === true && second.receipt.effectId === first.receipt.effectId, `executor calls=${calls}, duplicate=${second?.duplicate ?? 'error'}`);
   }
 
   // A23 — found by the fuzzer: the buyer lowers its budget, then the seller accepts the buyer's older, higher offer.
@@ -357,7 +358,7 @@ export async function runAttackSuite(): Promise<Checker> {
     const f = await newFixture({ persisted, buyerPolicy: { maxPrice: 64_500, targetPrice: 60_000 } });
     await act(f.session.id, { type: 'human_offer', offerPrice: 64_500 }, f.buyer);
     const stale = (await getPersistedSession(f.session.id) as NegotiationSession).offers.at(-1)!;
-    await act(f.session.id, { type: 'update_policy', buyerPolicy: { targetPrice: 58_000, maxPrice: 60_000, deadlineDays: 3, autoPurchase: false, delegationLevel: 2 } }, f.buyer);
+    await act(f.session.id, { type: 'update_policy', buyerPolicy: { targetPrice: 58_000, maxPrice: 60_000, deadlineDays: 3, autoPurchase: false } }, f.buyer);
     const sellerAccept = await act(f.session.id, { type: 'human_accept', targetOfferId: stale.id }, f.seller);
     selectPlanner('accept-anything');
     const agentAccept = await act(f.session.id, { type: 'auto_step' }, f.buyer); // the seller agent tries the same
@@ -366,6 +367,40 @@ export async function runAttackSuite(): Promise<Checker> {
     check.record('A23', 'An offer made under an older, higher budget cannot be accepted after the budget is lowered',
       !sellerAccept.ok && sellerAccept.code === 'TARGET_OFFER_WITHDRAWN' && agentAccept.ok && after.status !== 'awaiting_commit' && (await executedEffects(f.session.id)).length === 0,
       `seller→${sellerAccept.ok ? 'accepted' : sellerAccept.code}, seller agent→${after.offers.at(-1)?.actionType} (status ${after.status})`);
+  }
+
+  // A24 — units are not a negotiable dimension: listed stock bounds both paths.
+  {
+    const stock = demoListing().inventoryQuantity ?? 1;
+    const bulkTerms = { ...defaultNegotiationTerms(demoListing()), quantity: 1_000_000 };
+
+    const humanFixture = await newFixture({ persisted });
+    const human = await act(humanFixture.session.id, { type: 'human_offer', offerPrice: 57_000, terms: bulkTerms }, humanFixture.buyer);
+
+    const agentFixture = await newFixture({ persisted });
+    selectPlanner('bulk-order');
+    const agentStep = await act(agentFixture.session.id, { type: 'auto_step' }, agentFixture.buyer);
+    selectPlanner(undefined);
+    const agentOffer = (await getPersistedSession(agentFixture.session.id) as NegotiationSession)
+      .offers.find((offer) => offer.senderRole.startsWith('buyer'));
+
+    check.record('A24', 'Quantity inflation cannot exceed the listed stock',
+      !human.ok && human.code === 'OFFER_OUT_OF_POLICY' && agentStep.ok && (agentOffer?.terms?.quantity ?? 1) <= stock,
+      `human bulk offer→${human.ok ? 'accepted' : human.code}; agent quantity→${agentOffer?.terms?.quantity ?? 1} (stock ${stock})`);
+  }
+
+  // A25 — even an explicitly auto-purchasing policy cannot substitute for buyer approval.
+  {
+    const f = await newFixture({ persisted, buyerPolicy: { autoPurchase: true, autoApprovalMaxPrice: 60_000 } });
+    await seedSellerOffer(f, SELLER_PRICE);
+    selectPlanner('accept-anything');
+    await act(f.session.id, { type: 'auto_step' }, f.buyer);
+    selectPlanner(undefined);
+    const session = await getPersistedSession(f.session.id) as NegotiationSession;
+    const requirement = session.pendingCommit?.requirement;
+    check.record('A25', 'Auto-purchase policy cannot bypass the buyer’s approval',
+      session.status === 'awaiting_commit' && requirement?.mode === 'human' && requirement.approvers.some((a) => a.id === f.buyer.id && a.role === 'buyer') && (await executedEffects(f.session.id)).length === 0,
+      `status=${session.status}, requirement=${requirement?.mode ?? 'none'}`);
   }
 
   return check;

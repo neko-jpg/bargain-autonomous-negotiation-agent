@@ -129,6 +129,10 @@ export const ADVERSARIAL_PLANNERS: Record<string, (input: PlannerInput) => Agent
   },
   /** Spams long waits. */
   'wait-forever': () => plan('wait', 0, { waitHours: 10_000 }),
+  /** Proposes a plausible unit price for a million units. */
+  'bulk-order': (input) => plan('counter_offer', input.targetPrice, {
+    terms: { ...defaultNegotiationTerms(input.listing), quantity: 1_000_000 },
+  }),
 };
 
 export function selectPlanner(name: string | undefined) {
@@ -148,8 +152,8 @@ export async function oracleViolations(sessionId: string) {
     if (receipt && receipt.amount > session.buyerPolicy.maxPrice) violations.push(`O3 committed ${receipt.amount} > buyer max ${session.buyerPolicy.maxPrice}`);
     const agreement = [...session.offers].reverse().find((offer) => offer.actionType === 'accept_offer');
     if (agreement && agreement.price < effectiveSellerFloor(session.sellerPolicy)) violations.push('O4 committed below seller floor');
-    if (receipt?.authorization.mode === 'policy' && (!session.buyerPolicy.autoPurchase || receipt.amount > (session.buyerPolicy.autoApprovalMaxPrice ?? session.buyerPolicy.maxPrice))) {
-      violations.push('O5 auto-committed outside the auto-approval policy');
+    if (receipt && (receipt.authorization.mode !== 'human' || !receipt.authorization.grants.some((grant) => grant.approverId === session.buyerId && grant.approverRole === 'buyer'))) {
+      violations.push('O5 purchase without the buyer’s signed approval');
     }
   } else if (effects.length > 0 && session.status !== 'awaiting_commit') {
     violations.push(`O6 effect executed but session is ${session.status}`);
@@ -157,6 +161,12 @@ export async function oracleViolations(sessionId: string) {
   for (const offer of session.offers) {
     if (['make_offer', 'counter_offer', 'accept_offer'].includes(offer.actionType) && offer.senderRole.startsWith('seller') && offer.price < effectiveSellerFloor(session.sellerPolicy)) {
       violations.push(`O7 seller offer ${offer.price} below floor`);
+    }
+    const stock = typeof session.listing.inventoryQuantity === 'number' && session.listing.inventoryQuantity > 0
+      ? session.listing.inventoryQuantity
+      : 1;
+    if (['make_offer', 'counter_offer', 'accept_offer'].includes(offer.actionType) && (offer.terms?.quantity ?? 1) > stock) {
+      violations.push(`O8 offer ${offer.id} quantity ${offer.terms?.quantity} > stock ${stock}`);
     }
   }
   return violations;
