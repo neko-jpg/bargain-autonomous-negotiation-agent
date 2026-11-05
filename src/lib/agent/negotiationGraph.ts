@@ -16,7 +16,8 @@ import { MarketSimulator } from '@/lib/engine/marketSimulator';
 import { NegotiationGuardrails } from '@/lib/engine/guardrails';
 import { LLMProviderService } from '@/lib/agent/llmProvider';
 import { defaultNegotiationTerms } from '@/lib/negotiation/terms';
-import { effectiveSellerFloor, sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
+import { sanitizeOfferByPolicy } from '@/lib/negotiation/policyEngine';
+import { beginPurchaseCommit } from '@/lib/negotiation/commit';
 import { scoreAgentAlternatives } from '@/lib/agent/strategyScorer';
 import { updateNegotiationMemory } from '@/lib/agent/memory';
 import { recordAgentRun } from '@/lib/analytics/analyticsStore';
@@ -205,7 +206,7 @@ const planNode = async (state: typeof NegotiationGraphAnnotation.State) => {
     ? { ...planResult.reasoning, summary: selected.rationale }
     : planResult.reasoning;
 
-  recordAgentRun({
+  await recordAgentRun({
     negotiationId: session.id,
     provider: planResult.telemetry.provider,
     model: planResult.telemetry.model,
@@ -332,10 +333,9 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
         approvalReason = exactTarget.approvalReason;
         targetOfferId = target.id;
         targetOfferVersion = target.version ?? 1;
-        if (requiresHumanApproval) {
-          finalAction = 'ask_user';
-          correctionReason = [correctionReason, approvalReason].filter(Boolean).join(' ') || undefined;
-        }
+        // Acceptance is not irreversible by itself: it only opens a pending
+        // purchase commit. Whether a human must sign is decided by the Commit
+        // Gate, so the agent no longer converts acceptances to ask_user here.
       } else {
         // Changing an offer while accepting it is a counter-offer, never an acceptance.
         finalAction = 'counter_offer';
@@ -450,27 +450,12 @@ const actNode = async (state: typeof NegotiationGraphAnnotation.State) => {
   let isDeal = false;
   let isTerminated = false;
   let updatedStatus = session.status;
-  let dealSummary = session.dealSummary;
 
   if (action === 'accept_offer') {
+    // Agreement only. The purchase commitment is executed later by the
+    // Commit Gate (service.ts); agent code cannot reach the effect executor.
     isDeal = true;
-    updatedStatus = 'deal';
-
-    const initialPrice = session.listing.price;
-    const buyerSaved = initialPrice - price;
-    const sellerSurplus = price - effectiveSellerFloor(session.sellerPolicy);
-
-    dealSummary = {
-      agreedPrice: price,
-      initialPrice,
-      buyerSaved: Math.max(0, buyerSaved),
-      buyerSavedPercent: Math.round((Math.max(0, buyerSaved) / initialPrice) * 1000) / 10,
-      sellerSurplus: Math.max(0, sellerSurplus),
-      totalRounds: round,
-      totalActions: updatedOffers.length,
-      humanMessagesCount: updatedOffers.filter((o) => o.senderRole.includes('human')).length,
-      completedAt: new Date().toISOString(),
-    };
+    updatedStatus = 'awaiting_commit';
   } else if (action === 'reject_offer') {
     isTerminated = true;
     updatedStatus = 'rejected';
@@ -497,12 +482,11 @@ const actNode = async (state: typeof NegotiationGraphAnnotation.State) => {
     waitingUntilAt: action === 'wait' && plannedWaitHours
       ? new Date(Date.now() + plannedWaitHours * 60 * 60 * 1000).toISOString()
       : undefined,
-    dealSummary,
     updatedAt: new Date().toISOString(),
   };
 
   return {
-    session: updatedSession,
+    session: isDeal ? beginPurchaseCommit(updatedSession, newOffer) : updatedSession,
     isDeal,
     isTerminated,
   };

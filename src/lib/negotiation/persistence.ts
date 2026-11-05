@@ -5,7 +5,6 @@ import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { isProductionEnvironment } from '@/lib/runtime/environment';
 import {
   BuyerPolicy,
-  ApprovalTaskKind,
   Listing,
   NegotiationOffer,
   NegotiationSession,
@@ -22,6 +21,17 @@ import {
   toPublicSession,
 } from '@/lib/negotiation/sessionStore';
 import { NegotiationTerms } from '@/types/negotiation';
+import { SafetyError } from '@/lib/safety/commitGate';
+import { checkTransition } from '@/lib/negotiation/invariants';
+import { isKillSwitchEngaged } from '@/lib/negotiation/safetyControls';
+import { getEffectLedger } from '@/lib/negotiation/commit';
+import {
+  appendMemoryAuditEntry,
+  AuditEntry,
+  computeAuditHash,
+  GENESIS_HASH,
+  listMemoryAuditEntries,
+} from '@/lib/negotiation/auditLog';
 
 type PersistedIdempotentAction = {
   sessionId: string;
@@ -37,26 +47,8 @@ type PrivateStateEnvelope = {
   sellerPolicy: SellerPolicy;
 };
 
-export type PersistedApprovalSeed = {
-  id: string;
-  ownerId: string;
-  kind: ApprovalTaskKind;
-  title: string;
-  payload: unknown;
-  subjectType: 'offer' | 'contract';
-  subjectId: string;
-  subjectVersion: number;
-  proposalHash: string;
-  requestedBy: string;
-  expiresAt: string;
-};
-
-export type PersistedApprovalResolution = {
-  id: string;
-  expectedVersion: number;
-  status: 'approved' | 'rejected';
-  resolvedBy?: string;
-};
+/** Non-secret commit bookkeeping stored in negotiations.commit_state. */
+type CommitState = Pick<NegotiationSession, 'pendingCommit' | 'commitReceipt' | 'rejectedCommits'>;
 
 export interface DatabaseClient {
   query<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<T>>;
@@ -68,6 +60,11 @@ export interface DatabasePool {
   connect(): Promise<DatabaseClient>;
 }
 
+export interface CommitActor {
+  id: string;
+  role: string;
+}
+
 type HyperdriveRuntimeEnv = {
   HYPERDRIVE?: {
     connectionString?: string;
@@ -77,6 +74,13 @@ type HyperdriveRuntimeEnv = {
 let localPool: Pool | undefined;
 let databaseHandle: DatabasePool | undefined;
 let databaseSource: string | undefined;
+let databaseOverride: DatabasePool | undefined;
+
+/** Test hook: run the PostgreSQL code path against an in-process database (PGlite). */
+export function setDatabasePoolForTesting(pool: DatabasePool | undefined) {
+  if (isProductionEnvironment()) throw new Error('TEST_HOOK_DISABLED_IN_PRODUCTION');
+  databaseOverride = pool;
+}
 
 function getHyperdriveConnectionString() {
   try {
@@ -101,7 +105,7 @@ function getConnectionString() {
  * to a process-local Map would lose state on restart or across instances.
  */
 export function assertPersistenceReady() {
-  if (isProductionEnvironment() && !getConnectionString()) {
+  if (isProductionEnvironment() && !databaseOverride && !getConnectionString()) {
     throw new Error('DATABASE_REQUIRED_IN_PRODUCTION');
   }
 }
@@ -153,6 +157,7 @@ function createHyperdriveDatabase(connectionString: string): DatabasePool {
 }
 
 function getPool() {
+  if (databaseOverride) return databaseOverride;
   const connectionString = getConnectionString();
   if (!connectionString) return undefined;
   if (databaseHandle && databaseSource === connectionString) return databaseHandle;
@@ -175,7 +180,7 @@ export function getDatabasePool() {
 }
 
 export function isDatabaseConfigured() {
-  return Boolean(getConnectionString());
+  return Boolean(databaseOverride || getConnectionString());
 }
 
 function getPrivateStateKey() {
@@ -195,8 +200,8 @@ function encryptPrivateState(value: PrivateStateEnvelope) {
   return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
 }
 
-function decryptPrivateState(value: Buffer | string): PrivateStateEnvelope {
-  const payload = Buffer.isBuffer(value) ? value : Buffer.from(value, 'base64');
+function decryptPrivateState(value: Uint8Array | string): PrivateStateEnvelope {
+  const payload = typeof value === 'string' ? Buffer.from(value, 'base64') : Buffer.from(value);
   const iv = payload.subarray(0, 12);
   const authTag = payload.subarray(12, 28);
   const encrypted = payload.subarray(28);
@@ -216,6 +221,16 @@ function iso(value: unknown, fallback: string) {
   return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
 }
 
+function commitStateOf(session: NegotiationSession): CommitState | null {
+  if (!session.pendingCommit && !session.commitReceipt && !session.rejectedCommits?.length) return null;
+  return { pendingCommit: session.pendingCommit, commitReceipt: session.commitReceipt, rejectedCommits: session.rejectedCommits };
+}
+
+/**
+ * Catalog rows are shared reference data. They are written once when a
+ * negotiation starts; per-negotiation market simulation lives only in the
+ * negotiation's listing_snapshot so it can never corrupt the shared row.
+ */
 async function upsertListing(client: DatabaseClient, listing: Listing) {
   await client.query(
     `insert into listings (
@@ -223,20 +238,7 @@ async function upsertListing(client: DatabaseClient, listing: Listing) {
       likes_count, views_count, market_median_price_jpy, competing_listings_count,
       recent_demand, seller_name, condition
     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-    on conflict (id) do update set
-      title = excluded.title,
-      price_jpy = excluded.price_jpy,
-      image_url = excluded.image_url,
-      description = excluded.description,
-      days_listed = excluded.days_listed,
-      likes_count = excluded.likes_count,
-      views_count = excluded.views_count,
-      market_median_price_jpy = excluded.market_median_price_jpy,
-      competing_listings_count = excluded.competing_listings_count,
-      recent_demand = excluded.recent_demand,
-      seller_name = excluded.seller_name,
-      condition = excluded.condition,
-      updated_at = now()` ,
+    on conflict (id) do nothing`,
     [
       listing.id,
       listing.title,
@@ -244,7 +246,7 @@ async function upsertListing(client: DatabaseClient, listing: Listing) {
       listing.category,
       listing.imageUrl,
       listing.description,
-      listing.daysListed,
+      Math.floor(listing.daysListed),
       listing.likesCount,
       listing.viewsCount,
       listing.marketMedianPrice,
@@ -286,26 +288,31 @@ async function insertOffer(client: DatabaseClient, session: NegotiationSession, 
   );
 }
 
-async function insertEvent(client: DatabaseClient, session: NegotiationSession, eventType: string) {
-  const sequence = await client.query<{ sequence: number }>(
-    'select coalesce(max(sequence), 0) + 1 as sequence from negotiation_events where negotiation_id = $1',
+/** Appends a hash-chained audit event inside the caller's transaction. */
+async function insertEvent(client: DatabaseClient, session: NegotiationSession, eventType: string, actorId: string | null) {
+  const last = await client.query<{ sequence: number; entry_hash: string | null }>(
+    'select sequence, entry_hash from negotiation_events where negotiation_id = $1 order by sequence desc limit 1',
     [session.id]
   );
+  const sequence = Number(last.rows[0]?.sequence ?? 0) + 1;
+  const prevHash = last.rows[0]?.entry_hash ?? GENESIS_HASH;
+  const payload = JSON.parse(JSON.stringify(toPublicSession(session)));
+  const entryHash = computeAuditHash({ negotiationId: session.id, sequence, eventType, actorId, payload, prevHash });
   await client.query(
-    `insert into negotiation_events (negotiation_id, sequence, event_type, actor_id, public_payload)
-     values ($1,$2,$3,$4,$5)`,
-    [session.id, sequence.rows[0]?.sequence ?? 1, eventType, null, jsonValue(toPublicSession(session))]
+    `insert into negotiation_events (negotiation_id, sequence, event_type, actor_id, public_payload, prev_hash, entry_hash)
+     values ($1,$2,$3,$4,$5,$6,$7)`,
+    [session.id, sequence, eventType, actorId, JSON.stringify(payload), prevHash, entryHash]
   );
 }
 
-async function insertSession(client: DatabaseClient, session: NegotiationSession) {
+async function insertSession(client: DatabaseClient, session: NegotiationSession, actorId: string | null) {
   await upsertListing(client, session.listing);
   await client.query(
     `insert into negotiations (
       id, thread_id, listing_id, listing_snapshot, buyer_id, seller_id, status,
       current_turn, current_offer_price_jpy, deadline_at, waiting_until_at,
-      version, deal_summary, agent_memory, created_at, updated_at
-    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      version, deal_summary, agent_memory, commit_state, created_at, updated_at
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
     [
       session.id,
       session.threadId,
@@ -321,6 +328,7 @@ async function insertSession(client: DatabaseClient, session: NegotiationSession
       session.version ?? 0,
       jsonValue(session.dealSummary),
       jsonValue(session.agentMemory),
+      jsonValue(commitStateOf(session)),
       new Date(session.createdAt),
       new Date(session.updatedAt),
     ]
@@ -341,7 +349,7 @@ async function insertSession(client: DatabaseClient, session: NegotiationSession
     ]
   );
   for (const offer of session.offers) await insertOffer(client, session, offer);
-  await insertEvent(client, session, 'session.created');
+  await insertEvent(client, session, 'session.created', actorId);
 }
 
 function rowJson<T>(value: unknown): T | undefined {
@@ -357,7 +365,7 @@ async function loadSessionFromDatabase(sessionId: string) {
   try {
     const negotiation = await client.query(
       `select id, thread_id, listing_snapshot, buyer_id, seller_id, status, current_turn,
-        current_offer_price_jpy, waiting_until_at, version, deal_summary, agent_memory,
+        current_offer_price_jpy, waiting_until_at, version, deal_summary, agent_memory, commit_state,
         created_at, updated_at
        from negotiations where id = $1`,
       [sessionId]
@@ -384,6 +392,7 @@ async function loadSessionFromDatabase(sessionId: string) {
     const updatedAt = iso(row.updated_at, createdAt);
     const listing = rowJson<Listing>(row.listing_snapshot);
     if (!listing) throw new Error('NEGOTIATION_LISTING_SNAPSHOT_NOT_FOUND');
+    const commitState = rowJson<CommitState>(row.commit_state) ?? {};
 
     const session: NegotiationSession = {
       id: String(row.id),
@@ -421,6 +430,9 @@ async function loadSessionFromDatabase(sessionId: string) {
       waitingUntilAt: row.waiting_until_at ? iso(row.waiting_until_at, updatedAt) : undefined,
       agentMemory: rowJson<NegotiationSession['agentMemory']>(row.agent_memory),
       dealSummary: rowJson<NegotiationSession['dealSummary']>(row.deal_summary),
+      pendingCommit: commitState.pendingCommit,
+      commitReceipt: commitState.commitReceipt,
+      rejectedCommits: commitState.rejectedCommits,
       createdAt,
       updatedAt,
     };
@@ -438,12 +450,16 @@ export async function createPersistedNegotiationSession(
 ) {
   assertPersistenceReady();
   const session = createNegotiationSession(listing, buyerPolicy, buyerTerms, owners);
+  const actorId = owners?.buyerId ?? null;
   const database = getPool();
-  if (!database) return session;
+  if (!database) {
+    appendMemoryAuditEntry(session.id, 'session.created', actorId, toPublicSession(session));
+    return session;
+  }
   const client = await database.connect();
   try {
     await client.query('begin');
-    await insertSession(client, session);
+    await insertSession(client, session, actorId);
     await client.query('commit');
     return session;
   } catch (error) {
@@ -454,13 +470,11 @@ export async function createPersistedNegotiationSession(
   }
 }
 
+/** With a database configured, the database is the only source of truth. */
 export async function getPersistedSession(sessionId: string) {
   assertPersistenceReady();
   const database = getPool();
-  if (database) {
-    const persisted = await loadSessionFromDatabase(sessionId);
-    if (persisted) return persisted;
-  }
+  if (database) return loadSessionFromDatabase(sessionId);
   return getSession(sessionId);
 }
 
@@ -469,28 +483,51 @@ export async function getPersistedPublicSession(sessionId: string) {
   return session ? toPublicSession(session) : undefined;
 }
 
+async function assertSafeTransition(prev: NegotiationSession, next: NegotiationSession, actor: CommitActor | undefined) {
+  const ledger = getEffectLedger();
+  const violations = await checkTransition(prev, next, {
+    actor,
+    killSwitchEngaged: await isKillSwitchEngaged(),
+    isEffectExecuted: async (intentHash) => (await ledger.get(intentHash))?.status === 'executed',
+  });
+  if (violations.length > 0) {
+    throw new SafetyError('INVARIANT_VIOLATION', { violations });
+  }
+}
+
+/**
+ * The single write path for negotiation state. Every transition is checked
+ * against the safety invariants and appended to the hash-chained audit log in
+ * the same unit of work.
+ */
 export async function commitPersistedSession(
   nextSession: NegotiationSession,
   expectedVersion: number,
   eventType = 'session.updated',
-  idempotency?: {
-    key: string;
-    requestHash: string;
-    approval?: PersistedApprovalSeed;
-    approvalResolution?: PersistedApprovalResolution;
-  }
+  options: {
+    idempotency?: { key: string; requestHash: string };
+    actor?: CommitActor;
+  } = {}
 ) {
   assertPersistenceReady();
+  const { idempotency, actor } = options;
+  const actorId = actor?.id ?? null;
   const database = getPool();
   if (!database) {
+    const current = getSession(nextSession.id);
+    if (!current) throw new Error('SESSION_NOT_FOUND');
+    if ((current.version ?? 0) !== expectedVersion) throw new Error('SESSION_VERSION_CONFLICT');
+    await assertSafeTransition(current, nextSession, actor);
     const committed = commitSession(nextSession, expectedVersion, eventType as 'session.updated');
+    appendMemoryAuditEntry(committed.id, eventType, actorId, toPublicSession(committed));
     if (idempotency) rememberIdempotentAction(idempotency.key, committed.id, committed.version ?? 0, toPublicSession(committed), idempotency.requestHash);
     return committed;
   }
 
-  const current = await getPersistedSession(nextSession.id);
+  const current = await loadSessionFromDatabase(nextSession.id);
   if (!current) throw new Error('SESSION_NOT_FOUND');
   if ((current.version ?? 0) !== expectedVersion) throw new Error('SESSION_VERSION_CONFLICT');
+  await assertSafeTransition(current, nextSession, actor);
 
   const committedVersion = expectedVersion + 1;
   const committedCandidate: NegotiationSession = {
@@ -506,17 +543,15 @@ export async function commitPersistedSession(
     if (!locked.rows[0] || Number(locked.rows[0].version) !== expectedVersion) {
       throw new Error('SESSION_VERSION_CONFLICT');
     }
-    await upsertListing(client, committedCandidate.listing);
     await client.query(
       `update negotiations set
-        thread_id = $2, listing_id = $3, listing_snapshot = $4,
-        status = $5, current_turn = $6, current_offer_price_jpy = $7,
-        waiting_until_at = $8, version = $9, deal_summary = $10, agent_memory = $11, updated_at = $12
+        thread_id = $2, listing_snapshot = $3,
+        status = $4, current_turn = $5, current_offer_price_jpy = $6,
+        waiting_until_at = $7, version = $8, deal_summary = $9, agent_memory = $10, commit_state = $11, updated_at = $12
        where id = $1`,
       [
         committedCandidate.id,
         committedCandidate.threadId,
-        committedCandidate.listing.id,
         jsonValue(committedCandidate.listing),
         committedCandidate.status,
         committedCandidate.currentTurn,
@@ -525,6 +560,7 @@ export async function commitPersistedSession(
         committedVersion,
         jsonValue(committedCandidate.dealSummary),
         jsonValue(committedCandidate.agentMemory),
+        jsonValue(commitStateOf(committedCandidate)),
         new Date(committedCandidate.updatedAt),
       ]
     );
@@ -543,45 +579,8 @@ export async function commitPersistedSession(
         }),
       ]
     );
-    for (const offer of committedCandidate.offers) await insertOffer(client, committedCandidate, offer);
-    await insertEvent(client, committedCandidate, eventType);
-    if (idempotency?.approval) {
-      const approval = idempotency.approval;
-      await client.query(
-        `insert into approval_tasks (
-          id, negotiation_id, owner_id, kind, status, title, payload,
-          subject_type, subject_id, subject_version, proposal_hash,
-          requested_by, expires_at, version, created_at
-        ) values ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10,$11,$12,1,$13)
-        on conflict (id) do nothing`,
-        [
-          approval.id,
-          committedCandidate.id,
-          approval.ownerId,
-          approval.kind,
-          approval.title,
-          jsonValue(approval.payload),
-          approval.subjectType,
-          approval.subjectId,
-          approval.subjectVersion,
-          approval.proposalHash,
-          approval.requestedBy,
-          new Date(approval.expiresAt),
-          new Date(committedCandidate.updatedAt),
-        ]
-      );
-    }
-    if (idempotency?.approvalResolution) {
-      const resolution = idempotency.approvalResolution;
-      const result = await client.query(
-        `update approval_tasks
-         set status = $2, version = version + 1, resolved_at = now(), resolved_by = $4
-         where id = $1 and status = 'pending' and version = $3
-         returning version, resolved_at`,
-        [resolution.id, resolution.status, resolution.expectedVersion, resolution.resolvedBy ?? null]
-      );
-      if (!result.rows[0]) throw new Error('APPROVAL_VERSION_CONFLICT');
-    }
+    for (const offer of committedCandidate.offers.slice(current.offers.length)) await insertOffer(client, committedCandidate, offer);
+    await insertEvent(client, committedCandidate, eventType, actorId);
     if (idempotency) {
       await client.query(
         `insert into negotiation_idempotency (idempotency_key, negotiation_id, version, request_hash, response)
@@ -597,6 +596,7 @@ export async function commitPersistedSession(
     await client.release();
   }
 
+  // Keep the per-instance cache and SSE subscribers in step with the database.
   const committed = commitSession(nextSession, expectedVersion, eventType as 'session.updated');
   if (idempotency) rememberIdempotentAction(idempotency.key, committed.id, committed.version ?? 0, toPublicSession(committed), idempotency.requestHash);
   return committed;
@@ -615,38 +615,37 @@ export async function getPersistedIdempotentAction(
       [sessionId, key]
     );
     const row = result.rows[0];
-    if (row) {
-      const value: PersistedIdempotentAction = {
-        sessionId: String(row.negotiation_id),
-        version: Number(row.version),
-        requestHash: String(row.request_hash ?? ''),
-        response: rowJson<PersistedIdempotentAction['response']>(row.response) as PersistedIdempotentAction['response'],
-      };
-      rememberIdempotentAction(key, value.sessionId, value.version, value.response, value.requestHash);
-      if (requestHash && value.requestHash && requestHash !== value.requestHash) throw new Error('IDEMPOTENCY_KEY_REUSE');
-      return value;
-    }
+    if (!row) return undefined;
+    const value: PersistedIdempotentAction = {
+      sessionId: String(row.negotiation_id),
+      version: Number(row.version),
+      requestHash: String(row.request_hash ?? ''),
+      response: rowJson<PersistedIdempotentAction['response']>(row.response) as PersistedIdempotentAction['response'],
+    };
+    if (requestHash && value.requestHash && requestHash !== value.requestHash) throw new Error('IDEMPOTENCY_KEY_REUSE');
+    return value;
   }
   const cached = getIdempotentAction(sessionId, key);
   if (cached && requestHash && cached.requestHash && requestHash !== cached.requestHash) throw new Error('IDEMPOTENCY_KEY_REUSE');
   return cached;
 }
 
-export async function rememberPersistedAction(
-  key: string,
-  sessionId: string,
-  version: number,
-  response: PersistedIdempotentAction['response'],
-  requestHash = ''
-) {
-  assertPersistenceReady();
-  rememberIdempotentAction(key, sessionId, version, response, requestHash);
-  const database = getPool();
-  if (!database) return;
-  await database.query(
-    `insert into negotiation_idempotency (idempotency_key, negotiation_id, version, request_hash, response)
-     values ($1,$2,$3,$4,$5)
-     on conflict (negotiation_id, idempotency_key) do nothing`,
-    [key, sessionId, version, requestHash, jsonValue(response)]
+export async function listAuditEntries(negotiationId: string): Promise<AuditEntry[]> {
+  const database = getDatabasePool();
+  if (!database) return listMemoryAuditEntries(negotiationId);
+  const result = await database.query(
+    `select negotiation_id, sequence, event_type, actor_id, public_payload, prev_hash, entry_hash, created_at
+     from negotiation_events where negotiation_id = $1 order by sequence asc`,
+    [negotiationId]
   );
+  return result.rows.map((row) => ({
+    negotiationId: String(row.negotiation_id),
+    sequence: Number(row.sequence),
+    eventType: String(row.event_type),
+    actorId: row.actor_id === null ? null : String(row.actor_id),
+    payload: rowJson(row.public_payload),
+    prevHash: String(row.prev_hash ?? ''),
+    entryHash: String(row.entry_hash ?? ''),
+    createdAt: iso(row.created_at, new Date().toISOString()),
+  }));
 }

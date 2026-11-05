@@ -53,7 +53,7 @@ export function DashboardView({ onSelectNegotiation, session }: DashboardViewPro
 
   const summary = session?.dealSummary;
   const latestReasoning = [...(session?.offers ?? [])].reverse().find((offer) => offer.reasoning)?.reasoning;
-  const statusLabel = session?.status === 'deal' ? '成立' : session?.status === 'waiting' ? '待機中' : session?.status === 'rejected' ? '終了' : '交渉中';
+  const statusLabel = session?.status === 'deal' ? '成立' : session?.status === 'awaiting_commit' ? '確定待ち' : session?.status === 'waiting' ? '待機中' : session?.status === 'rejected' ? '終了' : '交渉中';
   const statusTone = session?.status === 'deal' ? 'success' : session?.status === 'waiting' ? 'waiting' : session?.status === 'rejected' ? 'ended' : 'active';
   const activityCount = session?.offers.length ?? 0;
 
@@ -103,7 +103,7 @@ export function DashboardView({ onSelectNegotiation, session }: DashboardViewPro
 
         <aside className="dashboard-approval-panel box-neo-slant box-neo-slant--rose" aria-labelledby="approval-queue-title">
           <div className="dashboard-panel-heading"><div><p className="eyebrow">HUMAN GATE</p><h2 id="approval-queue-title">承認キュー</h2></div><span className="dashboard-activity-count">{approvals.length}件</span></div>
-          {approvals.length === 0 ? <p className="dashboard-approval-empty"><CheckCircle2 className="h-5 w-5" aria-hidden="true" />現在、確認待ちの操作はありません。</p> : <div className="dashboard-approval-list">{approvals.slice(0, 4).map((task) => <div key={task.id} className="dashboard-approval-item"><div><span className="dashboard-approval-item__kind">{task.kind === 'contract' ? <FileCheck2 className="h-3.5 w-3.5" aria-hidden="true" /> : <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />}{task.kind === 'contract' ? '契約ドラフト' : '返信案'}</span><p>{task.title}</p><small>{new Date(task.createdAt).toLocaleString('ja-JP')}</small></div><div className="dashboard-approval-item__actions"><AriaButton onPress={() => void resolveApproval(task, 'reject')} className="dashboard-approval-button dashboard-approval-button--reject">却下</AriaButton><AriaButton onPress={() => void resolveApproval(task, 'approve')} className="dashboard-approval-button dashboard-approval-button--approve">承認</AriaButton></div></div>)}</div>}
+          {approvals.length === 0 ? <p className="dashboard-approval-empty"><CheckCircle2 className="h-5 w-5" aria-hidden="true" />現在、確認待ちの操作はありません。</p> : <div className="dashboard-approval-list">{approvals.slice(0, 4).map((task) => <div key={task.id} className="dashboard-approval-item"><div><span className="dashboard-approval-item__kind">{task.kind === 'contract' ? <FileCheck2 className="h-3.5 w-3.5" aria-hidden="true" /> : <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />}{task.kind === 'contract' ? '契約ドラフト' : task.kind === 'commit' ? '購入確定' : '返信案'}</span><p>{task.title}</p><small>{new Date(task.createdAt).toLocaleString('ja-JP')}</small></div><div className="dashboard-approval-item__actions"><AriaButton onPress={() => void resolveApproval(task, 'reject')} className="dashboard-approval-button dashboard-approval-button--reject">却下</AriaButton><AriaButton onPress={() => void resolveApproval(task, 'approve')} className="dashboard-approval-button dashboard-approval-button--approve">承認</AriaButton></div></div>)}</div>}
           {approvalError && <p className="dashboard-approval-error" role="alert"><AlertTriangle className="h-4 w-4" aria-hidden="true" />{approvalError}</p>}
         </aside>
       </section>

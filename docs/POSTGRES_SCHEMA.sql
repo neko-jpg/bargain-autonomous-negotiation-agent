@@ -29,7 +29,7 @@ create table if not exists negotiations (
   listing_snapshot jsonb not null,
   buyer_id text not null,
   seller_id text not null,
-  status text not null check (status in ('initializing', 'active', 'waiting', 'deal', 'rejected', 'paused_for_human')),
+  status text not null check (status in ('initializing', 'active', 'waiting', 'awaiting_commit', 'deal', 'rejected', 'paused_for_human')),
   current_turn text not null check (current_turn in ('buyer', 'seller')),
   current_offer_price_jpy bigint check (current_offer_price_jpy >= 0),
   deadline_at timestamptz,
@@ -37,6 +37,8 @@ create table if not exists negotiations (
   version integer not null default 0 check (version >= 0),
   deal_summary jsonb,
   agent_memory jsonb,
+  -- Pending purchase intent, signed grants, receipt and rejected intents.
+  commit_state jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -77,6 +79,10 @@ create table if not exists negotiation_events (
   event_type text not null,
   actor_id text,
   public_payload jsonb not null,
+  -- Hash chain: entry_hash = sha256(prev_hash | canonical(event)). Editing any
+  -- row breaks verification from that row on (see src/lib/negotiation/auditLog.ts).
+  prev_hash text,
+  entry_hash text,
   created_at timestamptz not null default now(),
   primary key (negotiation_id, sequence)
 );
@@ -111,11 +117,11 @@ create table if not exists approval_tasks (
   id text primary key,
   negotiation_id text not null references negotiations(id) on delete cascade,
   owner_id text not null,
-  kind text not null check (kind in ('reply', 'contract')),
+  kind text not null check (kind in ('reply', 'contract', 'commit')),
   status text not null check (status in ('pending', 'approved', 'rejected', 'expired')),
   title text not null,
   payload jsonb not null,
-  subject_type text not null check (subject_type in ('offer', 'contract')),
+  subject_type text not null check (subject_type in ('offer', 'contract', 'commit')),
   subject_id text not null,
   subject_version integer not null default 1 check (subject_version > 0),
   proposal_hash text not null default '',
@@ -136,6 +142,34 @@ create table if not exists negotiation_contracts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   approved_at timestamptz
+);
+
+-- Commit Gate outbox. One row per irreversible intent; the primary key makes a
+-- second execution of the same intent impossible across instances.
+create table if not exists effect_outbox (
+  intent_hash text primary key,
+  effect_id text not null unique,
+  kind text not null,
+  subject_id text not null,
+  amount bigint not null check (amount >= 0),
+  currency text not null,
+  payload jsonb not null,
+  authorization_record jsonb not null,
+  executor text not null,
+  status text not null check (status in ('reserved', 'executed', 'failed')),
+  external_ref text,
+  error text,
+  created_at timestamptz not null default now(),
+  reserved_at timestamptz not null,
+  executed_at timestamptz
+);
+
+-- Operator safety controls (kill switch).
+create table if not exists safety_controls (
+  key text primary key,
+  value text not null,
+  updated_by text,
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists negotiation_agent_runs (
@@ -174,6 +208,20 @@ alter table approval_tasks add column if not exists resolved_by text;
 alter table negotiation_idempotency drop constraint if exists negotiation_idempotency_pkey;
 alter table negotiation_idempotency add primary key (negotiation_id, idempotency_key);
 
+-- Commit Gate migration for databases created before awaiting_commit existed.
+alter table negotiations add column if not exists commit_state jsonb;
+alter table negotiations drop constraint if exists negotiations_status_check;
+alter table negotiations add constraint negotiations_status_check
+  check (status in ('initializing', 'active', 'waiting', 'awaiting_commit', 'deal', 'rejected', 'paused_for_human'));
+alter table negotiation_events add column if not exists prev_hash text;
+alter table negotiation_events add column if not exists entry_hash text;
+alter table approval_tasks drop constraint if exists approval_tasks_kind_check;
+alter table approval_tasks add constraint approval_tasks_kind_check check (kind in ('reply', 'contract', 'commit'));
+alter table approval_tasks drop constraint if exists approval_tasks_subject_type_check;
+alter table approval_tasks add constraint approval_tasks_subject_type_check check (subject_type in ('offer', 'contract', 'commit'));
+
+create index if not exists effect_outbox_subject_idx on effect_outbox (subject_id, created_at);
+create index if not exists approval_tasks_pending_subject_idx on approval_tasks (negotiation_id, kind, owner_id, proposal_hash) where status = 'pending';
 create index if not exists approval_tasks_status_idx on approval_tasks (status, created_at desc);
 create index if not exists approval_tasks_negotiation_idx on approval_tasks (negotiation_id, created_at desc);
 create index if not exists approval_tasks_owner_idx on approval_tasks (owner_id, status, created_at desc);

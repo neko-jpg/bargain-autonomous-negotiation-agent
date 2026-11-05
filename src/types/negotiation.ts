@@ -1,3 +1,5 @@
+import type { ApprovalGrant, AuthorizationRequirement, EffectReceipt, IrreversibleIntent } from '@/lib/safety/commitGate';
+
 export type DelegationLevel = 1 | 2 | 3; // 1: 提案のみ, 2: 交渉代行(購入前確認), 3: 完全委任(自動購入)
 
 export type UrgencyLevel = 'low' | 'medium' | 'high';
@@ -192,9 +194,43 @@ export type NegotiationStatus =
   | 'initializing'
   | 'active'
   | 'waiting'
+  /** Both sides agreed; the irreversible purchase commitment has not run yet. */
+  | 'awaiting_commit'
   | 'deal'
   | 'rejected'
   | 'paused_for_human';
+
+/** Payload of the irreversible `purchase.commit` effect. Hashed into the intent. */
+export interface PurchaseIntentPayload {
+  negotiationId: string;
+  agreementOfferId: string;
+  acceptedOfferId?: string;
+  listingId: string;
+  buyerId: string;
+  sellerId: string;
+  price: number;
+  terms: NegotiationTerms;
+  total: number;
+}
+
+export interface PendingCommit {
+  intent: IrreversibleIntent<PurchaseIntentPayload>;
+  intentHash: string;
+  requirement: AuthorizationRequirement;
+  grants: ApprovalGrant[];
+  createdAt: string;
+  expiresAt: string;
+  /** Why the gate refused to run the effect on the last attempt, if it did. */
+  blockedReason?: string;
+}
+
+export interface RejectedCommit {
+  intentHash: string;
+  amount: number;
+  reason: 'rejected' | 'expired';
+  by?: string;
+  at: string;
+}
 
 export interface DealSummary {
   agreedPrice: number;
@@ -256,8 +292,35 @@ export interface NegotiationSession {
   simulationStep?: number;
   agentMemory?: NegotiationMemory;
   dealSummary?: DealSummary;
+  pendingCommit?: PendingCommit;
+  commitReceipt?: EffectReceipt;
+  rejectedCommits?: RejectedCommit[];
+  /** Scripted, in-memory demo session. Never persisted, never reaches the gate. */
+  scriptedDemo?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PublicPendingCommit {
+  intentHash: string;
+  amount: number;
+  currency: string;
+  price: number;
+  shippingCost: number;
+  expiresAt: string;
+  requiresHumanApproval: boolean;
+  approvals: Array<{ role: string; granted: boolean }>;
+  blockedReason?: string;
+}
+
+export interface PublicCommitReceipt {
+  effectId: string;
+  intentHash: string;
+  amount: number;
+  currency: string;
+  executor: string;
+  authorizationMode: 'policy' | 'human';
+  executedAt: string;
 }
 
 /**
@@ -269,8 +332,6 @@ export interface PublicNegotiationSession {
   threadId: string;
   version: number;
   listing: Listing;
-  /** Non-sensitive buyer settings; reservation prices are never in this field. */
-  buyerPolicy: PublicBuyerPolicy;
   offers: NegotiationOfferView[];
   currentTurn: 'buyer' | 'seller';
   currentOfferPrice?: number;
@@ -279,12 +340,17 @@ export interface PublicNegotiationSession {
   waitingUntilAt?: string;
   simulationStep?: number;
   dealSummary?: PublicDealSummary;
+  pendingCommit?: PublicPendingCommit;
+  commitReceipt?: PublicCommitReceipt;
   /** Present only when the request is authenticated as the owner of this view. */
   viewer?: {
     actorId: string;
     role: 'buyer' | 'seller';
     policy: BuyerPolicy | SellerPolicy;
     agentMemory?: NegotiationMemory;
+    /** True when this viewer's signed approval is still needed to commit. */
+    mustApproveCommit?: boolean;
+    commitApprovalReason?: string;
   };
   viewerDealSummary?: DealSummary;
   createdAt: string;
@@ -324,7 +390,8 @@ export interface NegotiationGraphState {
   error?: string;
 }
 
-export type ApprovalTaskKind = 'reply' | 'contract';
+/** `reply` is retired (pre-gate approvals); kept so old rows still parse. */
+export type ApprovalTaskKind = 'reply' | 'contract' | 'commit';
 export type ApprovalTaskStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 
 export interface ApprovalTask {
@@ -335,7 +402,7 @@ export interface ApprovalTask {
   status: ApprovalTaskStatus;
   title: string;
   payload: unknown;
-  subjectType: 'offer' | 'contract';
+  subjectType: 'offer' | 'contract' | 'commit';
   subjectId: string;
   subjectVersion: number;
   proposalHash: string;

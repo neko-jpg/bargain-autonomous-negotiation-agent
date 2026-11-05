@@ -46,12 +46,12 @@ export async function runWorkflowStoreTests(): Promise<boolean> {
       completedAt: new Date().toISOString(),
     },
   };
-  const draft = await saveContractDraft(buildContractDraft(dealSession));
+  const { draft } = await saveContractDraft(buildContractDraft(dealSession));
   const approval = await createContractApproval(dealSession, draft);
   const pending = await listApprovalTasks('pending');
-  const resolved = await decideApprovalTask(approval.id, 'approve', approval.version, `workflow-test-${approval.id}`);
+  const resolved = await decideApprovalTask(approval.id, 'approve', approval.version, `workflow-test-${approval.id}`, { id: dealSession.buyerId, role: 'buyer' });
   const stored = await getContractDrafts(dealSession.id);
-  if (draft.status === 'pending_approval' && pending.some((task) => task.id === approval.id) && resolved.status === 'approved' && stored[0]?.status === 'approved') {
+  if (draft.status === 'pending_approval' && draft.buyer.id === dealSession.buyerId && pending.some((task) => task.id === approval.id) && resolved.status === 'approved' && stored[0]?.status === 'approved') {
     console.log('✅ [PASS] Contract draft and approval task persist through approval');
   } else {
     console.error('❌ [FAIL] Contract draft approval workflow did not complete');

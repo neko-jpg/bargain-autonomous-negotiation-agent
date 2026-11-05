@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { NegotiationActionRequestSchema } from '@/lib/negotiation/schemas';
-import { executeNegotiationAction, publicError } from '@/lib/negotiation/service';
+import { executeNegotiationAction, httpStatusForError, publicError } from '@/lib/negotiation/service';
 import { requireActor, ActorAuthError } from '@/lib/auth/actor';
 
 export const runtime = 'nodejs';
@@ -26,11 +26,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const action = body.action === 'auto_step' ? 'auto_step' : body.action;
   const parsed = NegotiationActionRequestSchema.safeParse({
     ...body,
-    type: action,
-    idempotencyKey: body.idempotencyKey ?? `legacy-${Date.now()}`,
+    type: body.action,
+    idempotencyKey: body.idempotencyKey ?? `legacy-${crypto.randomUUID()}`,
   });
   if (!parsed.success) {
     return NextResponse.json({ error: 'INVALID_REQUEST', message: '操作内容を確認してください。' }, { status: 422 });
@@ -41,7 +40,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ session });
   } catch (error) {
     const safe = publicError(error);
-    const status = safe.code === 'SESSION_NOT_FOUND' ? 404 : safe.code === 'SESSION_FORBIDDEN' ? 403 : safe.code === 'SESSION_VERSION_CONFLICT' ? 409 : 422;
-    return NextResponse.json({ error: safe.code, message: safe.message }, { status });
+    return NextResponse.json({ error: safe.code, message: safe.message }, { status: httpStatusForError(safe.code) });
   }
 }

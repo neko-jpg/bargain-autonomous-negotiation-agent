@@ -10,7 +10,7 @@ const globalState = globalThis as typeof globalThis & { __bargainAnalytics?: Ana
 const state = (globalState.__bargainAnalytics ??= {});
 const runs = (state.runs ??= []);
 
-export function recordAgentRun(input: Omit<AgentRunRecord, 'id' | 'createdAt'>) {
+export async function recordAgentRun(input: Omit<AgentRunRecord, 'id' | 'createdAt'>) {
   const record: AgentRunRecord = {
     ...input,
     id: `agent-run-${randomUUID()}`,
@@ -20,7 +20,8 @@ export function recordAgentRun(input: Omit<AgentRunRecord, 'id' | 'createdAt'>) 
   if (runs.length > 500) runs.splice(0, runs.length - 500);
   const database = getDatabasePool();
   if (database) {
-    void database.query(
+    // Awaited so a Worker does not cancel the insert after the response is sent.
+    await database.query(
       `insert into negotiation_agent_runs
        (id, negotiation_id, provider, model, latency_ms, fallback, candidate_count, selected_candidate, guardrail_corrections, created_at)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) on conflict (id) do nothing`,

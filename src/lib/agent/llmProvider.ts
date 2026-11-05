@@ -4,6 +4,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { z } from 'zod';
 import { AgentAlternative, Listing, AgentActionType, ActionReasoning, NegotiationOffer, NegotiationTerms, NegotiationMemory } from '@/types/negotiation';
 import { normalizeNegotiationTerms } from '@/lib/negotiation/terms';
+import { isProductionEnvironment } from '@/lib/runtime/environment';
 
 export interface AgentPlanningResult {
   action: AgentActionType;
@@ -23,6 +24,26 @@ export interface AgentPlanningResult {
 }
 
 type LLMProviderName = 'google' | 'openai' | 'auto';
+
+export interface PlannerInput {
+  role: 'buyer' | 'seller';
+  listing: Listing;
+  targetPrice: number;
+  reservationPrice: number;
+  history: NegotiationOffer[];
+}
+
+type PlannerOverride = (input: PlannerInput) => AgentPlanningResult | Promise<AgentPlanningResult>;
+let plannerOverride: PlannerOverride | undefined;
+
+/**
+ * Test hook: replace the model with an arbitrary (e.g. adversarial) planner.
+ * The safety suite uses it to prove guardrails hold whatever the LLM returns.
+ */
+export function setAgentPlannerForTesting(override: PlannerOverride | undefined) {
+  if (isProductionEnvironment()) throw new Error('TEST_HOOK_DISABLED_IN_PRODUCTION');
+  plannerOverride = override;
+}
 
 const isUsableApiKey = (value: string | undefined): value is string => {
   if (!value) return false;
@@ -136,6 +157,7 @@ export class LLMProviderService {
     baseTerms?: Partial<NegotiationTerms>,
     memory?: NegotiationMemory
   ): Promise<AgentPlanningResult> {
+    if (plannerOverride) return plannerOverride({ role, listing, targetPrice, reservationPrice, history });
     const configuredModel = this.getModel();
     const model = configuredModel?.model;
 

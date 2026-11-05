@@ -5,7 +5,9 @@ import {
   NegotiationOffer,
   NegotiationSession,
   NegotiationTerms,
+  PublicCommitReceipt,
   PublicNegotiationSession,
+  PublicPendingCommit,
   SellerPolicy,
 } from '@/types/negotiation';
 import {
@@ -38,6 +40,7 @@ interface SessionSubscription {
 interface BargainGlobalState {
   sessions?: Map<string, NegotiationSession>;
   events?: Map<string, SessionEvent[]>;
+  eventSequences?: Map<string, number>;
   listeners?: Map<string, Set<SessionSubscription>>;
   idempotency?: Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }>;
   locks?: Map<string, Promise<void>>;
@@ -47,6 +50,7 @@ const globalState = globalThis as typeof globalThis & { __bargain?: BargainGloba
 const state = (globalState.__bargain ??= {});
 const sessions: Map<string, NegotiationSession> = (state.sessions ??= new Map<string, NegotiationSession>());
 const events: Map<string, SessionEvent[]> = (state.events ??= new Map<string, SessionEvent[]>());
+const eventSequences: Map<string, number> = (state.eventSequences ??= new Map<string, number>());
 const listeners: Map<string, Set<SessionSubscription>> = (state.listeners ??= new Map<string, Set<SessionSubscription>>());
 const idempotency: Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }> =
   (state.idempotency ??= new Map<string, { sessionId: string; version: number; requestHash: string; response: PublicNegotiationSession }>());
@@ -93,7 +97,11 @@ export function createNegotiationSession(
         minPrice: roundToHundred(listing.price * 0.88),
         urgency: listing.recentDemand === 'low' ? 'high' : 'medium',
         deadlineDays: 7,
-        autoAccept: false,
+        // Catalog sellers are simulated counterparties, so their agent may
+        // accept within its floor. Seller-side human approval is still
+        // supported: set autoAccept=false and the Commit Gate requires the
+        // seller's signed approval as well.
+        autoAccept: true,
         costPrice: roundToHundred(listing.price * 0.78),
         minimumProfit: roundToHundred(listing.price * 0.10),
         minQuantity: 1,
@@ -157,6 +165,7 @@ export function createSwitchDemoSession(): NegotiationSession {
   const session = createNegotiationSession(listing, { ...DEFAULT_BUYER_POLICY_DEMO });
   const stored = sessions.get(session.id);
   if (stored) {
+    stored.scriptedDemo = true;
     stored.sellerPolicy = { ...DEFAULT_SELLER_POLICY_DEMO };
     stored.buyerPrivateState = { ...stored.buyerPrivateState, batna: DEFAULT_BUYER_POLICY_DEMO.maxPrice, riskTolerance: 0.4 };
     stored.sellerPrivateState = { ...stored.sellerPrivateState, batna: DEFAULT_SELLER_POLICY_DEMO.minPrice };
@@ -181,19 +190,50 @@ export function getPublicSession(sessionId: string): PublicNegotiationSession | 
   return session ? toPublicSession(session) : undefined;
 }
 
+function publicPendingCommit(session: NegotiationSession): PublicPendingCommit | undefined {
+  const pending = session.pendingCommit;
+  if (!pending) return undefined;
+  const approvers = pending.requirement.mode === 'human' ? pending.requirement.approvers : [];
+  return {
+    intentHash: pending.intentHash,
+    amount: pending.intent.amount,
+    currency: pending.intent.currency,
+    price: pending.intent.payload.price,
+    shippingCost: pending.intent.payload.terms.shippingCost,
+    expiresAt: pending.expiresAt,
+    requiresHumanApproval: pending.requirement.mode === 'human',
+    approvals: approvers.map((approver) => ({
+      role: approver.role,
+      granted: pending.grants.some((grant) => grant.approverId === approver.id && grant.approverRole === approver.role && Date.parse(grant.expiresAt) > Date.now()),
+    })),
+    blockedReason: pending.blockedReason,
+  };
+}
+
+function publicCommitReceipt(session: NegotiationSession): PublicCommitReceipt | undefined {
+  const receipt = session.commitReceipt;
+  if (!receipt) return undefined;
+  return {
+    effectId: receipt.effectId,
+    intentHash: receipt.intentHash,
+    amount: receipt.amount,
+    currency: receipt.currency,
+    executor: receipt.executor,
+    authorizationMode: receipt.authorization.mode,
+    executedAt: receipt.executedAt,
+  };
+}
+
+/**
+ * Counterparty-safe view. No policy values of either side cross this
+ * boundary: owners receive their own policy through toViewerSession().
+ */
 export function toPublicSession(session: NegotiationSession): PublicNegotiationSession {
-  const {
-    targetPrice: _targetPrice,
-    maxPrice: _maxPrice,
-    autoApprovalMaxPrice: _autoApprovalMaxPrice,
-    ...publicBuyerPolicy
-  } = session.buyerPolicy;
   return {
     id: session.id,
     threadId: session.threadId ?? `thread-${session.id}`,
     version: session.version ?? 0,
     listing: clone(session.listing),
-    buyerPolicy: clone(publicBuyerPolicy),
     offers: session.offers.map((offer) => toOfferView(offer)),
     currentTurn: session.currentTurn,
     currentOfferPrice: session.currentOfferPrice,
@@ -202,6 +242,8 @@ export function toPublicSession(session: NegotiationSession): PublicNegotiationS
     waitingUntilAt: session.waitingUntilAt,
     simulationStep: session.simulationStep,
     dealSummary: session.dealSummary ? publicDealSummary(session.dealSummary) : undefined,
+    pendingCommit: publicPendingCommit(session),
+    commitReceipt: publicCommitReceipt(session),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };
@@ -215,6 +257,11 @@ export function toViewerSession(session: NegotiationSession, actorId: string, ro
   if ((role === 'buyer' && session.buyerId !== actorId) || (role === 'seller' && session.sellerId !== actorId)) {
     throw new Error('SESSION_FORBIDDEN');
   }
+  const pending = session.pendingCommit;
+  const myRequirement = pending?.requirement.mode === 'human'
+    ? pending.requirement.approvers.find((approver) => approver.id === actorId && approver.role === role)
+    : undefined;
+  const alreadyGranted = Boolean(myRequirement && pending?.grants.some((grant) => grant.approverId === actorId && grant.approverRole === role && Date.parse(grant.expiresAt) > Date.now()));
   return {
     ...toPublicSession(session),
     offers: session.offers.map((offer) => toOfferView(offer, role)),
@@ -223,6 +270,8 @@ export function toViewerSession(session: NegotiationSession, actorId: string, ro
       role,
       policy: clone(role === 'buyer' ? session.buyerPolicy : session.sellerPolicy),
       agentMemory: clone(session.agentMemory),
+      mustApproveCommit: session.status === 'awaiting_commit' && Boolean(myRequirement) && !alreadyGranted,
+      commitApprovalReason: myRequirement?.reason,
     },
     viewerDealSummary: role === 'seller' && session.dealSummary ? clone(session.dealSummary) : undefined,
   };
@@ -324,19 +373,27 @@ export function subscribeSession(sessionId: string, listener: SessionListener, v
 
 function publish(session: NegotiationSession, type: SessionEvent['type']) {
   const bucket = events.get(session.id) ?? [];
+  const sequence = (eventSequences.get(session.id) ?? 0) + 1;
+  eventSequences.set(session.id, sequence);
   const event: SessionEvent = {
-    sequence: bucket.length + 1,
+    sequence,
     type,
     session: toPublicSession(session),
     occurredAt: new Date().toISOString(),
   };
   bucket.push(event);
   events.set(session.id, bucket.slice(-100));
+  // Delivery is best-effort and isolated: the state is already stored, so a
+  // broken subscriber must never turn a committed action into an error.
   listeners.get(session.id)?.forEach((subscription) => {
-    const nextEvent = subscription.viewer
-      ? { ...event, session: toViewerSession(session, subscription.viewer.actorId, subscription.viewer.role) }
-      : event;
-    subscription.listener(clone(nextEvent));
+    try {
+      const nextEvent = subscription.viewer
+        ? { ...event, session: toViewerSession(session, subscription.viewer.actorId, subscription.viewer.role) }
+        : event;
+      subscription.listener(clone(nextEvent));
+    } catch {
+      listeners.get(session.id)?.delete(subscription);
+    }
   });
 }
 

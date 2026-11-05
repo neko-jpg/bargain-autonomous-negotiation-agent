@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabasePool } from '@/lib/negotiation/persistence';
 import {
   ApprovalTask,
+  ApprovalTaskStatus,
   ContractClause,
   ContractDraft,
   NegotiationOffer,
@@ -10,27 +11,50 @@ import {
   PartySnapshot,
 } from '@/types/negotiation';
 import { defaultNegotiationTerms, totalOfferCost } from '@/lib/negotiation/terms';
-import { getDatabasePool, getPersistedSession } from '@/lib/negotiation/persistence';
-import { executeNegotiationAction } from '@/lib/negotiation/service';
+import { getDatabasePool } from '@/lib/negotiation/persistence';
+import { executeNegotiationAction, ServiceActor } from '@/lib/negotiation/service';
+import { hasLiveGrant, missingApprovals } from '@/lib/negotiation/commit';
 
 interface WorkflowState {
   approvals?: Map<string, ApprovalTask>;
   contracts?: Map<string, ContractDraft>;
-  approvalIdempotency?: Map<string, ApprovalTask>;
 }
 
 const globalState = globalThis as typeof globalThis & { __bargainWorkflow?: WorkflowState };
 const state = (globalState.__bargainWorkflow ??= {});
 const approvals = (state.approvals ??= new Map<string, ApprovalTask>());
 const contracts = (state.contracts ??= new Map<string, ContractDraft>());
-const approvalIdempotency = (state.approvalIdempotency ??= new Map<string, ApprovalTask>());
 
 const clone = <T>(value: T): T => structuredClone(value);
+
+const TASK_COLUMNS = 'id, negotiation_id, owner_id, kind, status, title, payload, subject_type, subject_id, subject_version, proposal_hash, requested_by, expires_at, version, created_at, resolved_at, resolved_by';
 
 function rowJson<T>(value: unknown): T | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value === 'string') return JSON.parse(value) as T;
   return value as T;
+}
+
+function taskFromRow(row: Record<string, unknown>): ApprovalTask {
+  return {
+    id: String(row.id),
+    negotiationId: String(row.negotiation_id),
+    ownerId: String(row.owner_id),
+    kind: row.kind as ApprovalTask['kind'],
+    status: row.status as ApprovalTask['status'],
+    title: String(row.title),
+    payload: rowJson(row.payload),
+    version: Number(row.version),
+    subjectType: row.subject_type as ApprovalTask['subjectType'],
+    subjectId: String(row.subject_id),
+    subjectVersion: Number(row.subject_version),
+    proposalHash: String(row.proposal_hash ?? ''),
+    requestedBy: String(row.requested_by ?? ''),
+    expiresAt: new Date(row.expires_at as string).toISOString(),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    resolvedAt: row.resolved_at ? new Date(row.resolved_at as string).toISOString() : undefined,
+    resolvedBy: row.resolved_by ? String(row.resolved_by) : undefined,
+  };
 }
 
 function hashContractDraft(draft: ContractDraft) {
@@ -84,22 +108,6 @@ async function resolveContractApprovalInTransaction(
       [updatedDraft.id, updatedDraft.status, JSON.stringify(updatedDraft), decision === 'approve' ? new Date() : null, task.subjectVersion]
     );
     if (!contractResult.rowCount) throw new Error('APPROVAL_SUBJECT_STALE');
-
-    const sequence = await client.query<{ sequence: number }>(
-      'select coalesce(max(sequence), 0) + 1 as sequence from negotiation_events where negotiation_id = $1',
-      [task.negotiationId]
-    );
-    await client.query(
-      `insert into negotiation_events (negotiation_id, sequence, event_type, actor_id, public_payload)
-       values ($1,$2,$3,$4,$5)`,
-      [
-        task.negotiationId,
-        sequence.rows[0]?.sequence ?? 1,
-        decision === 'approve' ? 'contract.approved' : 'contract.rejected',
-        actorId ?? null,
-        JSON.stringify({ contractId: updatedDraft.id, status: updatedDraft.status }),
-      ]
-    );
     await client.query('commit');
     return {
       version: Number(taskResult.rows[0].version),
@@ -114,11 +122,7 @@ async function resolveContractApprovalInTransaction(
   }
 }
 
-const party = (role: PartySnapshot['role'], name: string): PartySnapshot => ({
-  id: role === 'buyer' ? 'buyer-local' : name,
-  name,
-  role,
-});
+const party = (role: PartySnapshot['role'], id: string, name: string): PartySnapshot => ({ id, name, role });
 
 function latestAcceptedOffer(session: NegotiationSession): NegotiationOffer | undefined {
   return [...session.offers].reverse().find((offer) => offer.actionType === 'accept_offer');
@@ -150,8 +154,8 @@ export function buildContractDraft(session: NegotiationSession): ContractDraft {
     negotiationId: session.id,
     version: 1,
     status: 'pending_approval',
-    buyer: party('buyer', 'あなた（買い手）'),
-    seller: party('seller', session.listing.sellerName),
+    buyer: party('buyer', session.buyerId, 'あなた（買い手）'),
+    seller: party('seller', session.sellerId, session.listing.sellerName),
     listing: clone(session.listing),
     agreedPrice,
     totalAmount: totalOfferCost(agreedPrice, terms),
@@ -163,7 +167,8 @@ export function buildContractDraft(session: NegotiationSession): ContractDraft {
   };
 }
 
-export async function saveContractDraft(draft: ContractDraft) {
+/** Returns the existing open draft for the negotiation, or stores this one. */
+export async function saveContractDraft(draft: ContractDraft): Promise<{ draft: ContractDraft; created: boolean }> {
   const database = getDatabasePool();
   if (database) {
     const stored = await database.query(
@@ -173,7 +178,7 @@ export async function saveContractDraft(draft: ContractDraft) {
     const existingDraft = rowJson<ContractDraft>(stored.rows[0]?.draft);
     if (existingDraft) {
       contracts.set(existingDraft.id, clone(existingDraft));
-      return clone(existingDraft);
+      return { draft: clone(existingDraft), created: false };
     }
     await database.query(
       `insert into negotiation_contracts (id, negotiation_id, version, status, draft, created_at, updated_at)
@@ -182,10 +187,10 @@ export async function saveContractDraft(draft: ContractDraft) {
     );
   } else {
     const existing = Array.from(contracts.values()).find((item) => item.negotiationId === draft.negotiationId && item.status !== 'rejected');
-    if (existing) return clone(existing);
+    if (existing) return { draft: clone(existing), created: false };
   }
   contracts.set(draft.id, clone(draft));
-  return clone(draft);
+  return { draft: clone(draft), created: true };
 }
 
 export async function getContractDrafts(negotiationId: string) {
@@ -208,60 +213,37 @@ export async function getContractDrafts(negotiationId: string) {
     .map(clone);
 }
 
-export async function ensureApprovalTask(input: {
-  negotiationId: string;
-  ownerId: string;
-  kind: ApprovalTask['kind'];
-  title: string;
-  payload: unknown;
-  subjectType: ApprovalTask['subjectType'];
-  subjectId: string;
-  subjectVersion: number;
-  proposalHash: string;
-  requestedBy: string;
-  expiresAt: string;
-}) {
+type ApprovalInput = Omit<ApprovalTask, 'id' | 'status' | 'version' | 'createdAt' | 'resolvedAt' | 'resolvedBy'>;
+
+/** Idempotent per (negotiation, kind, owner, subject hash): the same pending subject never gets two tasks. */
+export async function ensureApprovalTask(input: ApprovalInput) {
   const database = getDatabasePool();
   if (database) {
     const stored = await database.query(
-      'select id, negotiation_id, owner_id, kind, status, title, payload, subject_type, subject_id, subject_version, proposal_hash, requested_by, expires_at, version, created_at, resolved_at, resolved_by from approval_tasks where negotiation_id = $1 and kind = $2 and status = $3 order by created_at desc limit 1',
-      [input.negotiationId, input.kind, 'pending']
+      `select ${TASK_COLUMNS} from approval_tasks
+       where negotiation_id = $1 and kind = $2 and owner_id = $3 and proposal_hash = $4 and status = 'pending'
+       order by created_at desc limit 1`,
+      [input.negotiationId, input.kind, input.ownerId, input.proposalHash]
     );
-    const row = stored.rows[0];
-    if (row) {
-      const task: ApprovalTask = {
-        id: String(row.id), negotiationId: String(row.negotiation_id), ownerId: String(row.owner_id), kind: row.kind, status: row.status,
-        title: String(row.title), payload: rowJson(row.payload), version: Number(row.version),
-        subjectType: row.subject_type, subjectId: String(row.subject_id), subjectVersion: Number(row.subject_version),
-        proposalHash: String(row.proposal_hash ?? ''), requestedBy: String(row.requested_by ?? ''),
-        expiresAt: new Date(row.expires_at).toISOString(),
-        createdAt: new Date(row.created_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined,
-        resolvedBy: row.resolved_by ? String(row.resolved_by) : undefined,
-      };
+    if (stored.rows[0]) {
+      const task = taskFromRow(stored.rows[0]);
       approvals.set(task.id, clone(task));
       return clone(task);
     }
   } else {
-    const existing = Array.from(approvals.values()).find((task) => task.negotiationId === input.negotiationId && task.kind === input.kind && task.status === 'pending');
+    const existing = Array.from(approvals.values()).find((task) => task.negotiationId === input.negotiationId
+      && task.kind === input.kind
+      && task.ownerId === input.ownerId
+      && task.proposalHash === input.proposalHash
+      && task.status === 'pending');
     if (existing) return clone(existing);
   }
-  const now = new Date().toISOString();
   const task: ApprovalTask = {
+    ...clone(input),
     id: `approval-${randomUUID()}`,
-    negotiationId: input.negotiationId,
-    ownerId: input.ownerId,
-    kind: input.kind,
     status: 'pending',
-    title: input.title,
-    payload: clone(input.payload),
-    subjectType: input.subjectType,
-    subjectId: input.subjectId,
-    subjectVersion: input.subjectVersion,
-    proposalHash: input.proposalHash,
-    requestedBy: input.requestedBy,
-    expiresAt: input.expiresAt,
     version: 1,
-    createdAt: now,
+    createdAt: new Date().toISOString(),
   };
   if (database) {
     await database.query(
@@ -274,53 +256,110 @@ export async function ensureApprovalTask(input: {
   return clone(task);
 }
 
-export async function ensureApprovalTaskForOffer(session: NegotiationSession, offer: NegotiationOffer) {
-  const ownerId = session.currentTurn === 'buyer' ? session.buyerId : session.sellerId;
-  const expiresAt = offer.terms?.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  return ensureApprovalTask({
-    negotiationId: session.id,
-    ownerId,
-    kind: 'reply',
-    title: 'AI提案の確認が必要です',
-    payload: {
-      offerId: offer.id,
-      targetOfferId: offer.targetOfferId,
-      targetOfferVersion: offer.targetOfferVersion,
-      expectedSessionVersion: session.version ?? 0,
-      actionType: offer.actionType,
-      price: offer.price,
-      terms: offer.terms,
-      messageText: offer.messageText,
-      decision: offer.decision,
-    },
-    subjectType: 'offer',
-    subjectId: offer.id,
-    subjectVersion: offer.version ?? 1,
-    proposalHash: offer.proposalHash ?? '',
-    requestedBy: offer.senderRole,
-    expiresAt,
-  });
+async function getApprovalTask(taskId: string) {
+  const database = getDatabasePool();
+  if (database) {
+    const result = await database.query(`select ${TASK_COLUMNS} from approval_tasks where id = $1`, [taskId]);
+    if (!result.rows[0]) return undefined;
+    const task = taskFromRow(result.rows[0]);
+    approvals.set(task.id, clone(task));
+    return task;
+  }
+  const task = approvals.get(taskId);
+  return task ? clone(task) : undefined;
+}
+
+/** System-side resolution used when the subject itself moved on. */
+async function closeApprovalTask(task: ApprovalTask, status: Exclude<ApprovalTaskStatus, 'pending'>, resolvedBy?: string) {
+  const database = getDatabasePool();
+  const resolvedAt = new Date().toISOString();
+  if (database) {
+    await database.query(
+      `update approval_tasks set status = $2, version = version + 1, resolved_at = $3, resolved_by = $4
+       where id = $1 and status = 'pending'`,
+      [task.id, status, new Date(resolvedAt), resolvedBy ?? null]
+    );
+  }
+  const current = approvals.get(task.id) ?? task;
+  if (current.status === 'pending') {
+    approvals.set(task.id, { ...current, status, version: current.version + 1, resolvedAt, resolvedBy });
+  }
+}
+
+async function listPendingTasks(negotiationId: string, kind: ApprovalTask['kind']) {
+  const database = getDatabasePool();
+  if (database) {
+    const result = await database.query(
+      `select ${TASK_COLUMNS} from approval_tasks where negotiation_id = $1 and kind = $2 and status = 'pending'`,
+      [negotiationId, kind]
+    );
+    return result.rows.map((row) => taskFromRow(row));
+  }
+  return Array.from(approvals.values()).filter((task) => task.negotiationId === negotiationId && task.kind === kind && task.status === 'pending').map(clone);
+}
+
+/**
+ * Keeps the approval queue an exact mirror of the session's pending commit:
+ * one task per missing approver, and every other pending commit task closed
+ * (approved, rejected, or expired) the moment its intent is no longer pending.
+ */
+export async function syncCommitApprovalTasks(session: NegotiationSession) {
+  const pending = session.status === 'awaiting_commit' ? session.pendingCommit : undefined;
+  for (const task of await listPendingTasks(session.id, 'commit')) {
+    const role = (task.payload as { approverRole?: string } | undefined)?.approverRole ?? (task.ownerId === session.buyerId ? 'buyer' : 'seller');
+    if (pending && pending.intentHash === task.proposalHash) {
+      if (hasLiveGrant(session, { id: task.ownerId, role })) await closeApprovalTask(task, 'approved', task.ownerId);
+      continue;
+    }
+    const executed = session.commitReceipt?.intentHash === task.proposalHash;
+    const rejection = session.rejectedCommits?.find((item) => item.intentHash === task.proposalHash);
+    await closeApprovalTask(
+      task,
+      executed ? 'approved' : rejection?.reason === 'rejected' ? 'rejected' : 'expired',
+      executed ? task.ownerId : rejection?.by
+    );
+  }
+  if (!pending) return;
+  for (const approver of missingApprovals(session)) {
+    await ensureApprovalTask({
+      negotiationId: session.id,
+      ownerId: approver.id,
+      kind: 'commit',
+      title: approver.role === 'buyer' ? '購入確定の承認が必要です' : '売却確定の承認が必要です',
+      payload: {
+        intentHash: pending.intentHash,
+        approverRole: approver.role,
+        amount: pending.intent.amount,
+        currency: pending.intent.currency,
+        price: pending.intent.payload.price,
+        shippingCost: pending.intent.payload.terms.shippingCost,
+        listingTitle: session.listing.title,
+        reason: approver.reason,
+      },
+      subjectType: 'commit',
+      subjectId: pending.intent.payload.agreementOfferId,
+      subjectVersion: 1,
+      proposalHash: pending.intentHash,
+      requestedBy: session.offers.find((offer) => offer.id === pending.intent.payload.agreementOfferId)?.senderRole ?? 'agent',
+      expiresAt: pending.expiresAt,
+    });
+  }
 }
 
 export async function listApprovalTasks(status?: ApprovalTask['status'], ownerId?: string) {
   const database = getDatabasePool();
   const persistedTasks: ApprovalTask[] = [];
   if (database) {
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    if (status) { values.push(status); conditions.push(`status = $${values.length}`); }
+    if (ownerId) { values.push(ownerId); conditions.push(`owner_id = $${values.length}`); }
     const result = await database.query(
-      `select id, negotiation_id, owner_id, kind, status, title, payload, subject_type, subject_id, subject_version, proposal_hash, requested_by, expires_at, version, created_at, resolved_at, resolved_by
-       from approval_tasks ${status || ownerId ? 'where ' : ''}${status ? 'status = $1' : ''}${status && ownerId ? ' and ' : ''}${ownerId ? `${status ? 'owner_id = $2' : 'owner_id = $1'}` : ''} order by created_at desc`,
-      status && ownerId ? [status, ownerId] : status ? [status] : ownerId ? [ownerId] : []
+      `select ${TASK_COLUMNS} from approval_tasks ${conditions.length ? `where ${conditions.join(' and ')}` : ''} order by created_at desc`,
+      values
     );
     for (const row of result.rows) {
-      const task: ApprovalTask = {
-        id: String(row.id), negotiationId: String(row.negotiation_id), ownerId: String(row.owner_id), kind: row.kind, status: row.status,
-        title: String(row.title), payload: rowJson(row.payload), version: Number(row.version),
-        subjectType: row.subject_type, subjectId: String(row.subject_id), subjectVersion: Number(row.subject_version),
-        proposalHash: String(row.proposal_hash ?? ''), requestedBy: String(row.requested_by ?? ''),
-        expiresAt: new Date(row.expires_at).toISOString(),
-        createdAt: new Date(row.created_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined,
-        resolvedBy: row.resolved_by ? String(row.resolved_by) : undefined,
-      };
+      const task = taskFromRow(row);
       approvals.set(task.id, clone(task));
       persistedTasks.push(task);
     }
@@ -336,143 +375,69 @@ export async function decideApprovalTask(
   taskId: string,
   decision: 'approve' | 'reject',
   expectedVersion: number,
-  idempotencyKey?: string,
-  actor?: { id: string; role: 'buyer' | 'seller' | 'operator' }
+  _idempotencyKey: string | undefined,
+  actor: { id: string; role: 'buyer' | 'seller' | 'operator' }
 ) {
-  if (idempotencyKey) {
-    const stored = approvalIdempotency.get(`${taskId}:${idempotencyKey}`);
-    if (stored) return clone(stored);
-  }
-  const database = getDatabasePool();
-  let task: ApprovalTask | undefined;
-  if (database) {
-    const stored = await database.query(
-      'select id, negotiation_id, owner_id, kind, status, title, payload, subject_type, subject_id, subject_version, proposal_hash, requested_by, expires_at, version, created_at, resolved_at, resolved_by from approval_tasks where id = $1',
-      [taskId]
-    );
-    const row = stored.rows[0];
-    if (row) {
-      task = {
-        id: String(row.id), negotiationId: String(row.negotiation_id), ownerId: String(row.owner_id), kind: row.kind, status: row.status,
-        title: String(row.title), payload: rowJson(row.payload), version: Number(row.version),
-        subjectType: row.subject_type, subjectId: String(row.subject_id), subjectVersion: Number(row.subject_version),
-        proposalHash: String(row.proposal_hash ?? ''), requestedBy: String(row.requested_by ?? ''),
-        expiresAt: new Date(row.expires_at).toISOString(),
-        createdAt: new Date(row.created_at).toISOString(), resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : undefined,
-        resolvedBy: row.resolved_by ? String(row.resolved_by) : undefined,
-      };
-      approvals.set(task.id, clone(task));
-    }
-  } else {
-    task = approvals.get(taskId);
-  }
+  const task = await getApprovalTask(taskId);
   if (!task) throw new Error('APPROVAL_NOT_FOUND');
-  if (actor && actor.role !== 'operator' && task.ownerId !== actor.id) throw new Error('APPROVAL_FORBIDDEN');
+  if (actor.role !== 'operator' && task.ownerId !== actor.id) throw new Error('APPROVAL_FORBIDDEN');
+  const decidedStatus = decision === 'approve' ? 'approved' : 'rejected';
+  // Replaying the same decision is a no-op that returns the resolved task.
+  if (task.status === decidedStatus && task.version === expectedVersion + 1) return task;
   if (task.version !== expectedVersion) throw new Error('APPROVAL_VERSION_CONFLICT');
   if (task.status !== 'pending') throw new Error('APPROVAL_ALREADY_RESOLVED');
   if (Date.parse(task.expiresAt) <= Date.now()) throw new Error('APPROVAL_EXPIRED');
 
-  const payload = task.payload as {
-    contractId?: string;
-    targetOfferId?: string;
-    targetOfferVersion?: number;
-    expectedSessionVersion?: number;
-  };
+  if (task.kind === 'commit') {
+    // The approval queue is just another surface for the same gated actions:
+    // the service checks the approver, the intent hash and the expiry.
+    await executeNegotiationAction(task.negotiationId, {
+      type: decision === 'approve' ? 'approve_commit' : 'reject_commit',
+      intentHash: task.proposalHash,
+      expectedVersion: 0,
+      idempotencyKey: `approval-${task.id}-${decision}`,
+    }, actor as ServiceActor);
+    const resolved = await getApprovalTask(task.id);
+    if (!resolved) throw new Error('APPROVAL_NOT_FOUND');
+    return resolved;
+  }
 
+  if (task.kind !== 'contract') throw new Error('APPROVAL_KIND_RETIRED');
+  const payload = task.payload as { contractId?: string };
+  if (!payload.contractId || payload.contractId !== task.subjectId) throw new Error('APPROVAL_SUBJECT_MISSING');
+  const database = getDatabasePool();
   let contractDraft: ContractDraft | undefined;
-  if (task.kind === 'contract') {
-    if (!payload.contractId || payload.contractId !== task.subjectId) throw new Error('APPROVAL_SUBJECT_MISSING');
-    if (database) {
-      const result = await database.query('select draft from negotiation_contracts where id = $1', [payload.contractId]);
-      contractDraft = rowJson<ContractDraft>(result.rows[0]?.draft);
-    } else {
-      contractDraft = contracts.get(payload.contractId);
-    }
-    if (!contractDraft || contractDraft.version !== task.subjectVersion || hashContractDraft(contractDraft) !== task.proposalHash) {
-      throw new Error('APPROVAL_SUBJECT_STALE');
-    }
-    contracts.set(contractDraft.id, clone(contractDraft));
+  if (database) {
+    const result = await database.query('select draft from negotiation_contracts where id = $1', [payload.contractId]);
+    contractDraft = rowJson<ContractDraft>(result.rows[0]?.draft);
+  } else {
+    contractDraft = contracts.get(payload.contractId);
   }
-
-  // A reply approval is a command gate, not just a label change. Apply the
-  // exact proposal that was hashed into the task before resolving it.
-  if (task.kind === 'reply') {
-    const currentSession = await getPersistedSession(task.negotiationId);
-    const subject = currentSession?.offers.find((offer) => offer.id === task.subjectId);
-    if (!subject || subject.version !== task.subjectVersion || subject.proposalHash !== task.proposalHash) {
-      throw new Error('APPROVAL_SUBJECT_STALE');
-    }
-    if (decision === 'approve') {
-      if (!payload.targetOfferId) throw new Error('APPROVAL_SUBJECT_MISSING');
-      const target = currentSession?.offers.find((offer) => offer.id === payload.targetOfferId);
-      if (!target || target.version !== (payload.targetOfferVersion ?? target.version)) throw new Error('APPROVAL_SUBJECT_STALE');
-    }
-    const approvalResolution = database ? {
-      id: task.id,
-      expectedVersion,
-      status: decision === 'approve' ? 'approved' as const : 'rejected' as const,
-      resolvedBy: actor?.id,
-    } : undefined;
-    await executeNegotiationAction(task.negotiationId, decision === 'approve'
-      ? {
-          type: 'human_accept',
-          expectedVersion: payload.expectedSessionVersion ?? 0,
-          targetOfferId: payload.targetOfferId as string,
-          targetOfferVersion: payload.targetOfferVersion,
-          idempotencyKey: `approval-apply-${task.id}-${expectedVersion}-approve`,
-        }
-      : {
-          type: 'human_reject',
-          expectedVersion: payload.expectedSessionVersion ?? 0,
-          idempotencyKey: `approval-apply-${task.id}-${expectedVersion}-reject`,
-        }, actor, approvalResolution ? { approvalResolution } : undefined);
+  if (!contractDraft || contractDraft.version !== task.subjectVersion || hashContractDraft(contractDraft) !== task.proposalHash) {
+    throw new Error('APPROVAL_SUBJECT_STALE');
   }
-
-  const contractResolution = database && task.kind === 'contract' && contractDraft
-    ? await resolveContractApprovalInTransaction(database, task, decision, expectedVersion, actor?.id, contractDraft)
-    : undefined;
-  if (contractResolution) contractDraft = contractResolution.draft;
 
   const resolved: ApprovalTask = {
     ...task,
-    status: decision === 'approve' ? 'approved' : 'rejected',
+    status: decidedStatus,
     version: task.version + 1,
-    resolvedAt: contractResolution?.resolvedAt ?? new Date().toISOString(),
-    resolvedBy: actor?.id,
+    resolvedAt: new Date().toISOString(),
+    resolvedBy: actor.id,
   };
-  if (contractResolution) resolved.version = contractResolution.version;
-  if (database && task.kind !== 'reply' && task.kind !== 'contract') {
-    const result = await database.query(
-      `update approval_tasks set status = $2, version = version + 1, resolved_at = now(), resolved_by = $4
-       where id = $1 and status = 'pending' and version = $3
-       returning id, negotiation_id, kind, status, title, payload, version, created_at, resolved_at`,
-      [task.id, resolved.status, expectedVersion, actor?.id ?? null]
-    );
-    if (!result.rows[0]) throw new Error('APPROVAL_VERSION_CONFLICT');
-    const row = result.rows[0];
-    resolved.version = Number(row.version);
-    resolved.resolvedAt = row.resolved_at ? new Date(row.resolved_at).toISOString() : resolved.resolvedAt;
+  if (database) {
+    const result = await resolveContractApprovalInTransaction(database, task, decision, expectedVersion, actor.id, contractDraft);
+    resolved.version = result.version;
+    resolved.resolvedAt = result.resolvedAt;
+    contracts.set(result.draft.id, clone(result.draft));
+  } else {
+    contracts.set(contractDraft.id, clone({
+      ...contractDraft,
+      status: decidedStatus,
+      approvedAt: decision === 'approve' ? new Date().toISOString() : undefined,
+      updatedAt: new Date().toISOString(),
+    }));
   }
   approvals.set(task.id, clone(resolved));
-
-  if (task.kind === 'contract' && payload.contractId) {
-    const draft = contractDraft;
-    if (draft) {
-      contracts.set(draft.id, clone({
-        ...draft,
-        status: decision === 'approve' ? 'approved' : 'rejected',
-        approvedAt: decision === 'approve' ? new Date().toISOString() : undefined,
-        updatedAt: new Date().toISOString(),
-      }));
-      if (database && !contractResolution) {
-        await database.query(
-          `update negotiation_contracts set status = $2, draft = $3, updated_at = now(), approved_at = $4 where id = $1`,
-          [draft.id, decision === 'approve' ? 'approved' : 'rejected', JSON.stringify(contracts.get(draft.id)), decision === 'approve' ? new Date() : null]
-        );
-      }
-    }
-  }
-  if (idempotencyKey) approvalIdempotency.set(`${taskId}:${idempotencyKey}`, clone(resolved));
   return clone(resolved);
 }
 
