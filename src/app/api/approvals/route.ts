@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   let actor;
   try { actor = requireActor(request); } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: code === 'CROSS_SITE_REQUEST' ? 403 : 401 });
   }
   const status = request.nextUrl.searchParams.get('status') as ApprovalTaskStatus | null;
   const allowed: ApprovalTaskStatus[] = ['pending', 'approved', 'rejected', 'expired'];

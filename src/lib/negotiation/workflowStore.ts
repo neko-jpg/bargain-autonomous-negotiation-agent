@@ -433,6 +433,9 @@ export async function decideApprovalTask(
   const task = await getApprovalTask(taskId);
   if (!task) throw new Error('APPROVAL_NOT_FOUND');
   if (actor.role !== 'operator' && task.ownerId !== actor.id) throw new Error('APPROVAL_FORBIDDEN');
+  // Operators can halt, never consent: they may decline a task on the owner's
+  // behalf, but only the owner can approve it (contract or purchase).
+  if (actor.role === 'operator' && decision === 'approve' && task.kind !== 'commit') throw new Error('APPROVAL_FORBIDDEN');
   const decidedStatus = decision === 'approve' ? 'approved' : 'rejected';
   // Replaying the same decision is a no-op that returns the resolved task.
   if (task.status === decidedStatus && task.version === expectedVersion + 1) return task;

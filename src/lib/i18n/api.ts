@@ -9,6 +9,7 @@ const API_ERROR_KEYS: Record<string, TranslationKey> = {
   AUTH_REQUIRED: 'api.authRequired',
   AUTH_NOT_CONFIGURED: 'api.authNotConfigured',
   INVALID_ACTOR: 'api.invalidCredentials',
+  CROSS_SITE_REQUEST: 'api.crossSiteRequest',
   INVALID_ROLE: 'api.invalidRole',
   INVALID_REQUEST: 'api.invalidRequest',
   LISTING_NOT_FOUND: 'api.listingNotFound',

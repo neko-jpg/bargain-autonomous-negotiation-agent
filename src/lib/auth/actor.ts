@@ -9,7 +9,7 @@ export interface ActorContext {
 }
 
 export class ActorAuthError extends Error {
-  constructor(public readonly code: 'ACTOR_REQUIRED' | 'INVALID_ACTOR' | 'AUTH_NOT_CONFIGURED') {
+  constructor(public readonly code: 'ACTOR_REQUIRED' | 'INVALID_ACTOR' | 'AUTH_NOT_CONFIGURED' | 'CROSS_SITE_REQUEST') {
     super(code);
   }
 }
@@ -78,6 +78,37 @@ function actorRole(request: Request): PartyRole {
   return value === 'seller' ? value : 'buyer';
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function firstHost(value: string | null) {
+  return value?.split(',')[0]?.trim().toLowerCase() || undefined;
+}
+
+/**
+ * CSRF guard for cookie-authenticated state changes (approvals, actions, the
+ * kill switch). A browser attaches the actor cookie to any request for this
+ * host, so a page on another site must not be able to approve a purchase in
+ * the victim's name. SameSite=Lax already stops most of this; this check does
+ * not rely on it. Non-browser clients (curl, the operator runbook) send
+ * neither header and carry no victim cookie, so they pass.
+ */
+export function assertSameOriginRequest(request: Request) {
+  if (SAFE_METHODS.has(request.method.toUpperCase())) return;
+  const fetchSite = request.headers.get('sec-fetch-site');
+  if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') throw new ActorAuthError('CROSS_SITE_REQUEST');
+  const origin = request.headers.get('origin');
+  if (!origin) return;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host.toLowerCase();
+  } catch {
+    // `Origin: null` (sandboxed frames, data: URLs) is never same-origin.
+    throw new ActorAuthError('CROSS_SITE_REQUEST');
+  }
+  const allowed = [firstHost(request.headers.get('x-forwarded-host')), firstHost(request.headers.get('host'))];
+  if (!allowed.includes(originHost)) throw new ActorAuthError('CROSS_SITE_REQUEST');
+}
+
 export function getActor(request: Request): ActorContext | undefined {
   // Header identity is an explicit local/staging test switch only. It is
   // disabled by default and cannot be enabled in production.
@@ -92,12 +123,14 @@ export function getActor(request: Request): ActorContext | undefined {
 }
 
 export function requireActor(request: Request): ActorContext {
+  assertSameOriginRequest(request);
   const actor = getActor(request);
   if (!actor) throw new ActorAuthError('ACTOR_REQUIRED');
   return actor;
 }
 
 export function createActor(request: Request): { actor: ActorContext; isNew: boolean } {
+  assertSameOriginRequest(request);
   let existing: ActorContext | undefined;
   try {
     existing = getActor(request);

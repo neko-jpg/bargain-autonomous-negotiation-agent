@@ -27,7 +27,10 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
   const [feedback, setFeedback] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const agreedPrice = summary?.agreedPrice ?? listing.price;
-  const fee = Math.round(agreedPrice * 0.05);
+  // The total is the amount the commit gate recorded (price plus shipping), so
+  // the summary shows exactly what the buyer approved. No fee is charged.
+  const total = commitReceipt?.amount ?? agreedPrice;
+  const shippingCost = total - agreedPrice;
 
   const submitFeedback = (event: FormEvent) => {
     event.preventDefault();
@@ -107,9 +110,8 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
             <div className="deal-summary-lines">
               <Line label={t('deal.itemPrice')} value={formatYen(agreedPrice)} />
               {buyerMaxPrice && <Line label={t('deal.yourMax')} value={formatYen(buyerMaxPrice)} />}
-              <Line label={t('deal.fee')} value={formatYen(fee)} />
-              <Line label={t('deal.shipping')} value={t('deal.shippingIncluded')} />
-              <Line label={t('deal.total')} value={formatYen(agreedPrice + fee)} strong />
+              <Line label={t('deal.shipping')} value={shippingCost > 0 ? formatYen(shippingCost) : t('deal.shippingIncluded')} />
+              <Line label={t('deal.total')} value={formatYen(total)} strong />
             </div>
             <p className="deal-summary-note">{t('deal.commitNote', { executor: executorLabel })}</p>
           </section>

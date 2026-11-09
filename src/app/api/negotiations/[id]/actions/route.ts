@@ -15,7 +15,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     actor = requireActor(request);
   } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: code === 'CROSS_SITE_REQUEST' ? 403 : 401 });
   }
   const body = await request.json().catch(() => null);
   const parsed = NegotiationActionRequestSchema.safeParse(body);

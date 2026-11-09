@@ -58,7 +58,8 @@ export type EffectAuthorization =
   | { mode: 'policy'; policyId: string }
   | { mode: 'human'; grants: Array<{ grantId: string; approverId: string; approverRole: string }> };
 
-export type LedgerStatus = 'reserved' | 'executed' | 'failed';
+/** `voided`: a human confirmed the effect never happened. Terminal; never re-run. */
+export type LedgerStatus = 'reserved' | 'executed' | 'failed' | 'voided';
 
 export interface LedgerEntry {
   effectId: string;
@@ -76,6 +77,15 @@ export interface LedgerEntry {
   createdAt: string;
   reservedAt: string;
   executedAt?: string;
+  /** Set when a human reconciled an ambiguous attempt. */
+  resolution?: EffectResolution;
+}
+
+export interface EffectResolution {
+  outcome: 'executed' | 'not_executed';
+  resolvedBy: string;
+  resolvedAt: string;
+  note: string;
 }
 
 export interface EffectReceipt {
@@ -105,6 +115,11 @@ export interface EffectLedger {
   reserve(entry: LedgerEntry): Promise<{ outcome: 'reserved' | 'executed' | 'in_progress'; entry: LedgerEntry }>;
   markExecuted(intentHash: string, externalRef: string | undefined, executedAt: string): Promise<LedgerEntry>;
   markFailed(intentHash: string, error: string): Promise<void>;
+  /**
+   * Compare-and-set from `from` to the resolved status. Returns undefined when
+   * the entry is no longer in `from` (someone else resolved or executed it).
+   */
+  resolve(intentHash: string, from: LedgerStatus, resolution: EffectResolution, externalRef?: string): Promise<LedgerEntry | undefined>;
   list(subjectId?: string): Promise<LedgerEntry[]>;
 }
 
@@ -222,6 +237,7 @@ export async function executeIrreversibleEffect(
   const existing = await deps.ledger.get(intentHash);
   if (existing?.status === 'executed') return { receipt: toReceipt(existing), duplicate: true };
   if (existing?.status === 'failed') throw new SafetyError('EFFECT_RESULT_UNKNOWN');
+  if (existing?.status === 'voided') throw new SafetyError('EFFECT_VOIDED');
 
   if (await deps.isKillSwitchEngaged()) throw new SafetyError('KILL_SWITCH_ENGAGED');
 
@@ -265,6 +281,37 @@ export async function executeIrreversibleEffect(
   return { receipt: toReceipt(executed), duplicate: false };
 }
 
+/** A reservation older than this with no outcome is treated as a crashed attempt. */
+export const STALE_RESERVATION_MS = 5 * 60_000;
+
+/**
+ * Records what a human verified out of band (e.g. in the payment provider's
+ * dashboard) about an attempt whose outcome the gate could not observe. It
+ * never runs the executor: `executed` adopts the original authorization,
+ * `not_executed` voids the intent so it can never run. Only failed or stale
+ * reservations qualify, so it cannot be used to fabricate a purchase.
+ */
+export async function reconcileEffect(
+  intentHash: string,
+  resolution: EffectResolution,
+  deps: { ledger: EffectLedger; now?: () => Date },
+  externalRef?: string
+): Promise<{ entry: LedgerEntry; receipt?: EffectReceipt }> {
+  const entry = await deps.ledger.get(intentHash);
+  if (!entry) throw new SafetyError('EFFECT_NOT_RECONCILABLE', { status: 'missing' });
+  const target = resolution.outcome === 'executed' ? 'executed' : 'voided';
+  // Repeating the same verdict is idempotent; contradicting a recorded one is not.
+  if (entry.resolution && entry.status === target && entry.resolution.outcome === resolution.outcome) {
+    return { entry, receipt: target === 'executed' ? toReceipt(entry) : undefined };
+  }
+  const now = (deps.now?.() ?? new Date()).getTime();
+  const stale = entry.status === 'reserved' && now - Date.parse(entry.reservedAt) >= STALE_RESERVATION_MS;
+  if (entry.status !== 'failed' && !stale) throw new SafetyError('EFFECT_NOT_RECONCILABLE', { status: entry.status });
+  const resolved = await deps.ledger.resolve(intentHash, entry.status, resolution, externalRef);
+  if (!resolved) throw new SafetyError('LEDGER_STATE_CONFLICT');
+  return { entry: resolved, receipt: target === 'executed' ? toReceipt(resolved) : undefined };
+}
+
 /** Process-local ledger for development, tests and the reuse example. */
 export class MemoryEffectLedger implements EffectLedger {
   private readonly entries = new Map<string, LedgerEntry>();
@@ -293,7 +340,22 @@ export class MemoryEffectLedger implements EffectLedger {
 
   async markFailed(intentHash: string, error: string) {
     const entry = this.entries.get(intentHash);
-    if (entry) this.entries.set(intentHash, { ...entry, status: 'failed', error });
+    if (entry?.status === 'reserved') this.entries.set(intentHash, { ...entry, status: 'failed', error });
+  }
+
+  async resolve(intentHash: string, from: LedgerStatus, resolution: EffectResolution, externalRef?: string) {
+    const entry = this.entries.get(intentHash);
+    if (!entry || entry.status !== from) return undefined;
+    const executed = resolution.outcome === 'executed';
+    const resolved: LedgerEntry = {
+      ...entry,
+      status: executed ? 'executed' : 'voided',
+      resolution: { ...resolution },
+      externalRef: executed ? externalRef ?? entry.externalRef : entry.externalRef,
+      executedAt: executed ? resolution.resolvedAt : entry.executedAt,
+    };
+    this.entries.set(intentHash, resolved);
+    return structuredClone(resolved);
   }
 
   async list(subjectId?: string) {

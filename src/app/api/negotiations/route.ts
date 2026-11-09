@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     isNew = created.isNew;
   } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'INVALID_ACTOR';
-    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code), }, { status: code === 'AUTH_NOT_CONFIGURED' ? 503 : 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code), }, { status: code === 'AUTH_NOT_CONFIGURED' ? 503 : code === 'CROSS_SITE_REQUEST' ? 403 : 401 });
   }
   if (actor.role !== 'buyer') {
     return NextResponse.json({ error: 'INVALID_ROLE', message: apiErrorMessage(locale, 'INVALID_ROLE') }, { status: 403 });

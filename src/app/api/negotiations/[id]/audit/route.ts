@@ -17,7 +17,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   let actor;
   try { actor = requireActor(request); } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: code === 'CROSS_SITE_REQUEST' ? 403 : 401 });
   }
   const session = await getPersistedSession(id);
   if (!session) return NextResponse.json({ error: 'SESSION_NOT_FOUND', message: apiErrorMessage(locale, 'SESSION_NOT_FOUND') }, { status: 404 });

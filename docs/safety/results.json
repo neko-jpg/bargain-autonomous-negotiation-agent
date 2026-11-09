@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-11-05T12:06:53.945Z",
-  "commit": "e4ba240 (working tree modified)",
+  "generatedAt": "2026-11-09T02:59:00.825Z",
+  "commit": "ec4dd14 (working tree modified)",
   "node": "v26.13.0",
   "allPassed": true,
   "checks": [
@@ -51,7 +51,7 @@
       "id": "S7",
       "title": "The trusted core stays within its size and dependency budget",
       "passed": true,
-      "detail": "326 lines, 27 exports, no forbidden tokens"
+      "detail": "369 lines, 30 exports, no forbidden tokens"
     },
     {
       "suite": "architecture",
@@ -243,6 +243,27 @@
       "detail": "status=awaiting_commit, requirement=human"
     },
     {
+      "suite": "attacks",
+      "id": "A26",
+      "title": "An operator cannot approve a contract for the buyer (may only decline)",
+      "passed": true,
+      "detail": "operator approve→APPROVAL_FORBIDDEN, operator decline→ok"
+    },
+    {
+      "suite": "attacks",
+      "id": "A27",
+      "title": "Cross-site POSTs (CSRF) are refused before authentication",
+      "passed": true,
+      "detail": "cross-site=CROSS_SITE_REQUEST, same-site sibling=CROSS_SITE_REQUEST, forged origin=CROSS_SITE_REQUEST, null origin=CROSS_SITE_REQUEST, same-origin=ACTOR_REQUIRED"
+    },
+    {
+      "suite": "attacks",
+      "id": "A28",
+      "title": "Ambiguous purchases are reconciled by an operator only, never re-run, never fabricated",
+      "passed": true,
+      "detail": "buyer→ACTION_FORBIDDEN_FOR_ROLE; confirmed→deal; voided→paused_for_human/voided, re-run→EFFECT_VOIDED; fabricate→EFFECT_NOT_RECONCILABLE; executor calls=2"
+    },
+    {
       "suite": "gate-memory",
       "id": "G1",
       "title": "An ambiguous executor failure never causes an automatic retry",
@@ -276,6 +297,13 @@
       "title": "A kill switch cannot undo a call already in flight",
       "passed": true,
       "detail": "result=SUCCESS, calls=1"
+    },
+    {
+      "suite": "gate-memory",
+      "id": "G6",
+      "title": "A crashed attempt is reconcilable only once stale; the verdict is final and voided intents never run",
+      "passed": true,
+      "detail": "before stale=EFFECT_NOT_RECONCILABLE, after=SUCCESS, repeat=SUCCESS, flip=EFFECT_NOT_RECONCILABLE, re-run=EFFECT_VOIDED"
     },
     {
       "suite": "injection",
@@ -530,6 +558,27 @@
       "detail": "status=awaiting_commit, requirement=human"
     },
     {
+      "suite": "attacks-postgres",
+      "id": "A26",
+      "title": "An operator cannot approve a contract for the buyer (may only decline)",
+      "passed": true,
+      "detail": "operator approve→APPROVAL_FORBIDDEN, operator decline→ok"
+    },
+    {
+      "suite": "attacks-postgres",
+      "id": "A27",
+      "title": "Cross-site POSTs (CSRF) are refused before authentication",
+      "passed": true,
+      "detail": "cross-site=CROSS_SITE_REQUEST, same-site sibling=CROSS_SITE_REQUEST, forged origin=CROSS_SITE_REQUEST, null origin=CROSS_SITE_REQUEST, same-origin=ACTOR_REQUIRED"
+    },
+    {
+      "suite": "attacks-postgres",
+      "id": "A28",
+      "title": "Ambiguous purchases are reconciled by an operator only, never re-run, never fabricated",
+      "passed": true,
+      "detail": "buyer→ACTION_FORBIDDEN_FOR_ROLE; confirmed→deal; voided→paused_for_human/voided, re-run→EFFECT_VOIDED; fabricate→EFFECT_NOT_RECONCILABLE; executor calls=2"
+    },
+    {
       "suite": "gate-postgres",
       "id": "G1",
       "title": "An ambiguous executor failure never causes an automatic retry",
@@ -563,6 +612,13 @@
       "title": "A kill switch cannot undo a call already in flight",
       "passed": true,
       "detail": "result=SUCCESS, calls=1"
+    },
+    {
+      "suite": "gate-postgres",
+      "id": "G6",
+      "title": "A crashed attempt is reconcilable only once stale; the verdict is final and voided intents never run",
+      "passed": true,
+      "detail": "before stale=EFFECT_NOT_RECONCILABLE, after=SUCCESS, repeat=SUCCESS, flip=EFFECT_NOT_RECONCILABLE, re-run=EFFECT_VOIDED"
     },
     {
       "suite": "fuzz",
@@ -824,6 +880,38 @@
       "killed": true,
       "caughtBy": [
         "An offer made under an older, higher budget cannot be accepted after the budget is lowered"
+      ]
+    },
+    {
+      "id": "M18",
+      "title": "Operators may approve contracts on behalf of the buyer",
+      "killed": true,
+      "caughtBy": [
+        "An operator cannot approve a contract for the buyer (may only decline)"
+      ]
+    },
+    {
+      "id": "M19",
+      "title": "No Origin / Sec-Fetch-Site check on state-changing requests (CSRF)",
+      "killed": true,
+      "caughtBy": [
+        "Cross-site POSTs (CSRF) are refused before authentication"
+      ]
+    },
+    {
+      "id": "M20",
+      "title": "A party may reconcile (declare the outcome of) its own purchase",
+      "killed": true,
+      "caughtBy": [
+        "Ambiguous purchases are reconciled by an operator only, never re-run, never fabricated"
+      ]
+    },
+    {
+      "id": "M21",
+      "title": "Reconciliation allowed while an attempt may still be running",
+      "killed": true,
+      "caughtBy": [
+        "A crashed attempt is reconcilable only once stale; the verdict is final and voided intents never run"
       ]
     }
   ],

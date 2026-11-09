@@ -81,6 +81,15 @@ export const NegotiationActionRequestSchema = z.discriminatedUnion('type', [
   versionedAction.extend({ type: z.literal('approve_commit'), intentHash: z.string().regex(/^[0-9a-f]{64}$/) }),
   versionedAction.extend({ type: z.literal('reject_commit'), intentHash: z.string().regex(/^[0-9a-f]{64}$/) }),
   versionedAction.extend({ type: z.literal('retry_commit') }),
+  // Operator records what they verified with the payment provider for an
+  // attempt whose outcome the gate could not observe. Never runs the effect.
+  versionedAction.extend({
+    type: z.literal('reconcile_commit'),
+    intentHash: z.string().regex(/^[0-9a-f]{64}$/),
+    outcome: z.enum(['executed', 'not_executed']),
+    externalRef: z.string().trim().min(1).max(200).optional(),
+    note: z.string().trim().min(5).max(500),
+  }),
 ]);
 
 export type CreateNegotiationRequest = z.infer<typeof CreateNegotiationRequestSchema>;

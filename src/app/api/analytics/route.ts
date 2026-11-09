@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const locale = await getRequestLocale();
   try { requireActor(request); } catch (error) {
     const code = error instanceof ActorAuthError ? error.code : 'ACTOR_REQUIRED';
-    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: 401 });
+    return NextResponse.json({ error: code, message: apiErrorMessage(locale, code) }, { status: code === 'CROSS_SITE_REQUEST' ? 403 : 401 });
   }
   return NextResponse.json({ analytics: await getAnalyticsOverview(), workflow: await getWorkflowOverview() });
 }

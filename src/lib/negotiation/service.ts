@@ -21,7 +21,7 @@ import {
 import { syncCommitApprovalTasks } from '@/lib/negotiation/workflowStore';
 import { ActorContext } from '@/lib/auth/actor';
 import { buildPublicOfferMessage, buildPublicOfferMessageTemplate } from '@/lib/negotiation/messages';
-import { executeIrreversibleEffect, SafetyError } from '@/lib/safety/commitGate';
+import { executeIrreversibleEffect, reconcileEffect, SafetyError } from '@/lib/safety/commitGate';
 import {
   beginPurchaseCommit,
   gateDependencies,
@@ -83,6 +83,9 @@ const ACTOR_RULES: Record<ActionType, ActorRule[]> = {
   approve_commit: ['party'],
   reject_commit: ['party', 'operator'],
   retry_commit: ['party', 'operator', 'system'],
+  // Verifying an ambiguous payment out of band is an operations duty. It never
+  // runs the effect, and a party must not be able to declare their own outcome.
+  reconcile_commit: ['operator'],
 };
 
 function assertActorAllowed(session: NegotiationSession, type: ActionType, actor: ServiceActor) {
@@ -115,9 +118,10 @@ const STATUS_RULES: Record<ActionType, NegotiationSession['status'][]> = {
   approve_commit: ['awaiting_commit'],
   reject_commit: ['awaiting_commit'],
   retry_commit: ['awaiting_commit'],
+  reconcile_commit: ['awaiting_commit'],
 };
 /** Bound to an intent hash instead of the session version. */
-const COMMIT_BOUND = new Set<ActionType>(['approve_commit', 'reject_commit', 'retry_commit']);
+const COMMIT_BOUND = new Set<ActionType>(['approve_commit', 'reject_commit', 'retry_commit', 'reconcile_commit']);
 
 function assertActionAllowed(session: NegotiationSession, type: ActionType) {
   if (terminalStatuses.has(session.status)) throw new NegotiationServiceError('SESSION_ALREADY_FINISHED');
@@ -213,7 +217,7 @@ function viewFor(session: NegotiationSession, actor: ServiceActor): PublicNegoti
   return isParty(actor) ? toViewerSession(session, actor.id, actor.role) : toPublicSession(session);
 }
 
-function closePendingCommit(session: NegotiationSession, reason: 'rejected' | 'expired', by?: string): NegotiationSession {
+function closePendingCommit(session: NegotiationSession, reason: 'rejected' | 'expired' | 'voided', by?: string): NegotiationSession {
   if (!session.pendingCommit) return session;
   return {
     ...session,
@@ -400,6 +404,22 @@ export async function executeNegotiationAction(
         };
         break;
       }
+      case 'reconcile_commit': {
+        const pending = current.pendingCommit;
+        if (pending?.intentHash !== request.intentHash) throw new NegotiationServiceError('COMMIT_INTENT_MISMATCH');
+        const { receipt } = await reconcileEffect(request.intentHash, {
+          outcome: request.outcome,
+          resolvedBy: actor.id,
+          resolvedAt: new Date().toISOString(),
+          note: request.note,
+        }, { ledger: gateDependencies().ledger }, request.externalRef);
+        next = receipt
+          ? { ...current, status: 'deal', pendingCommit: undefined, commitReceipt: receipt, dealSummary: makeDealSummary(current, pending.intent.payload.price) }
+          // Voided: nothing was bought. A new purchase needs a new acceptance,
+          // hence a new intent hash and a new buyer approval.
+          : { ...closePendingCommit(current, 'voided', actor.id), status: 'paused_for_human' };
+        break;
+      }
       case 'retry_commit': {
         const settled = await settlePendingCommit(current, actor);
         await syncCommitApprovalTasks(settled);
@@ -452,6 +472,9 @@ const ERROR_MESSAGE_KEYS: Record<string, TranslationKey> = {
   COMMIT_APPROVER_FORBIDDEN: 'negotiation.error.commitApproverForbidden',
   COMMIT_EXPIRED: 'negotiation.error.commitExpired',
   NO_PENDING_COMMIT: 'negotiation.error.notApproveCommit',
+  SESSION_NOT_RECONCILE_COMMIT: 'negotiation.error.notReconcileCommit',
+  EFFECT_NOT_RECONCILABLE: 'negotiation.error.effectNotReconcilable',
+  EFFECT_VOIDED: 'negotiation.error.effectVoided',
   INVARIANT_VIOLATION: 'negotiation.error.invariantViolation',
 };
 
@@ -475,7 +498,7 @@ export function publicError(error: unknown, locale: Locale = DEFAULT_LOCALE) {
 }
 
 const FORBIDDEN = new Set(['SESSION_FORBIDDEN', 'NOT_YOUR_TURN', 'ACTION_FORBIDDEN_FOR_ROLE', 'COMMIT_APPROVER_FORBIDDEN']);
-const CONFLICT = new Set(['SESSION_VERSION_CONFLICT', 'COMMIT_INTENT_MISMATCH', 'TARGET_OFFER_SUPERSEDED', 'TARGET_OFFER_VERSION_CONFLICT', 'INVARIANT_VIOLATION']);
+const CONFLICT = new Set(['SESSION_VERSION_CONFLICT', 'COMMIT_INTENT_MISMATCH', 'EFFECT_NOT_RECONCILABLE', 'LEDGER_STATE_CONFLICT', 'TARGET_OFFER_SUPERSEDED', 'TARGET_OFFER_VERSION_CONFLICT', 'INVARIANT_VIOLATION']);
 
 export function httpStatusForError(code: string) {
   if (code === 'SESSION_NOT_FOUND') return 404;

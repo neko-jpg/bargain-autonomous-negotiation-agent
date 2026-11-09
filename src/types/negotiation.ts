@@ -247,7 +247,8 @@ export interface PendingCommit {
 export interface RejectedCommit {
   intentHash: string;
   amount: number;
-  reason: 'rejected' | 'expired';
+  /** `voided`: an operator confirmed an ambiguous attempt never took effect. */
+  reason: 'rejected' | 'expired' | 'voided';
   by?: string;
   at: string;
 }
@@ -477,7 +478,7 @@ export interface ContractDraft {
 export interface AgentRunRecord {
   id: string;
   negotiationId: string;
-  provider: 'google' | 'openai' | 'opencode' | 'heuristic';
+  provider: 'google' | 'openai' | 'opencode' | 'deepseek' | 'heuristic';
   model?: string;
   latencyMs: number;
   fallback: boolean;
