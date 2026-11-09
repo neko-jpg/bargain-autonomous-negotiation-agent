@@ -113,7 +113,7 @@ The real-model result is not proof that a model was hijacked. No tested model
 was clearly hijacked. The forced-obedience case (P2) uses a planner that obeys
 every injection, and shows that nothing is committed in that case.
 
-Demo video: [link to be added]
+Demo video (2 min 29 s, MP4): [BARGAIN_demo_v4_compact.mp4](https://github.com/neko-jpg/bargain-autonomous-negotiation-agent/releases/download/demo-video-v4/BARGAIN_demo_v4_compact.mp4), also on the [release page](https://github.com/neko-jpg/bargain-autonomous-negotiation-agent/releases/tag/demo-video-v4).
 
 ## Limitations
 
