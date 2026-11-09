@@ -110,7 +110,7 @@
   <!-- Storage band -->
   <rect x="24" y="480" width="952" height="60" rx="12" fill="#f1f5f9" stroke="#cbd5e1"/>
   <text x="44" y="505" font-size="13" font-weight="700" fill="#0f172a">Single write path</text>
-  <text x="44" y="525" font-size="12" fill="#475569">every state change → 8 runtime invariants → hash-chained audit log → PostgreSQL (outbox primary key = intent hash)</text>
+  <text x="44" y="525" font-size="12" fill="#475569">every state change → 9 runtime invariants → hash-chained audit log → PostgreSQL (outbox primary key = intent hash)</text>
   <path d="M410 370 L410 474" stroke="#64748b" stroke-width="1.4" fill="none" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
   <path d="M873 460 L873 476" stroke="#64748b" stroke-width="1.4" fill="none" stroke-dasharray="4 4" marker-end="url(#arrow)"/>
 </svg>
