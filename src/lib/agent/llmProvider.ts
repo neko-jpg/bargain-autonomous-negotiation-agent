@@ -19,13 +19,13 @@ export interface AgentPlanningResult {
   terms?: NegotiationTerms;
   alternatives: AgentAlternative[];
   telemetry: {
-    provider: 'google' | 'openai' | 'opencode' | 'heuristic';
+    provider: 'google' | 'openai' | 'opencode' | 'deepseek' | 'heuristic';
     model?: string;
     fallback: boolean;
   };
 }
 
-type LLMProviderName = 'google' | 'openai' | 'opencode' | 'auto';
+type LLMProviderName = 'google' | 'openai' | 'opencode' | 'deepseek' | 'auto';
 
 export interface PlannerInput {
   role: 'buyer' | 'seller';
@@ -100,6 +100,15 @@ const LLM_MAX_OUTPUT_TOKENS = (() => {
  * answered with MissingSessionID.
  */
 const opencodeSessionId = `bargain-${globalThis.crypto.randomUUID().slice(0, 12)}`;
+
+const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-flash';
+
+/** Passed to the gateways that accept it. Only the values they honour are forwarded. */
+function configuredReasoningEffort(): 'low' | 'medium' | 'high' | undefined {
+  const effort = process.env.BARGAIN_LLM_REASONING_EFFORT?.trim().toLowerCase();
+  return effort === 'low' || effort === 'medium' || effort === 'high' ? effort : undefined;
+}
 
 export interface PlannerUserPromptInput {
   history: NegotiationOffer[];
@@ -234,19 +243,21 @@ const AgentPlanSchema = z.object({
 export class LLMProviderService {
   private static getProviderPreference(): LLMProviderName {
     const configured = process.env.BARGAIN_LLM_PROVIDER?.trim().toLowerCase();
-    return configured === 'google' || configured === 'openai' || configured === 'opencode' ? configured : 'auto';
+    return configured === 'google' || configured === 'openai' || configured === 'opencode' || configured === 'deepseek' ? configured : 'auto';
   }
 
-  private static getModel(): { model: BaseChatModel; provider: 'google' | 'openai' | 'opencode'; modelName: string } | null {
+  private static getModel(): { model: BaseChatModel; provider: 'google' | 'openai' | 'opencode' | 'deepseek'; modelName: string } | null {
     const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
     const provider = this.getProviderPreference();
-    const candidates: Array<'google' | 'openai' | 'opencode'> = provider === 'google'
+    const candidates: Array<'google' | 'openai' | 'opencode' | 'deepseek'> = provider === 'google'
       ? ['google']
       : provider === 'openai'
         ? ['openai']
         : provider === 'opencode'
           ? ['opencode']
-          : ['google', 'openai', 'opencode'];
+          : provider === 'deepseek'
+            ? ['deepseek']
+            : ['google', 'openai', 'opencode', 'deepseek'];
 
     for (const candidate of candidates) {
       if (candidate === 'google' && isUsableApiKey(googleApiKey)) {
@@ -289,11 +300,7 @@ export class LLMProviderService {
           // session id so requests for one conversation hit the same upstream.
           const baseURL = (process.env.OPENCODE_BASE_URL?.trim() || 'https://opencode.ai/inference/go/v1').replace(/\/$/, '');
           const session = process.env.OPENCODE_SESSION_ID?.trim() || opencodeSessionId;
-          // Reasoning dominates latency on this gateway. `low` keeps the plan
-          // coherent while cutting the thinking time; anything else is ignored
-          // by the model, so only offer values it honours.
-          const effort = process.env.BARGAIN_LLM_REASONING_EFFORT?.trim().toLowerCase();
-          const reasoning = effort === 'low' || effort === 'medium' || effort === 'high' ? effort : undefined;
+          const reasoning = configuredReasoningEffort();
           return {
             model: new ChatOpenAI({
               apiKey: process.env.OPENCODE_API_KEY,
@@ -309,6 +316,29 @@ export class LLMProviderService {
           };
         } catch (e) {
           console.warn('OpenCode client initialization failed, fallback to heuristic engine:', e);
+        }
+      }
+
+      if (candidate === 'deepseek' && isUsableApiKey(process.env.DEEPSEEK_API_KEY)) {
+        try {
+          const modelName = process.env.BARGAIN_DEEPSEEK_MODEL?.trim() || DEEPSEEK_DEFAULT_MODEL;
+          const baseURL = (process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL).replace(/\/$/, '');
+          const reasoning = configuredReasoningEffort();
+          return {
+            model: new ChatOpenAI({
+              apiKey: process.env.DEEPSEEK_API_KEY,
+              modelName,
+              temperature: 0.2,
+              maxTokens: LLM_MAX_OUTPUT_TOKENS,
+              maxRetries: 1,
+              ...(reasoning ? { modelKwargs: { reasoning_effort: reasoning } } : {}),
+              configuration: { baseURL },
+            }),
+            provider: 'deepseek',
+            modelName,
+          };
+        } catch (e) {
+          console.warn('DeepSeek client initialization failed, fallback to heuristic engine:', e);
         }
       }
     }
@@ -386,9 +416,11 @@ export class LLMProviderService {
 
         // OpenAI's strict schema mode rejects `.optional()` without
         // `.nullable()`, and some gateways reject the dialect outright. The
-        // OpenCode gateway is one of them, so it is driven as plain text.
-        const supportsStructuredOutput = configuredModel?.provider !== 'opencode'
-          && typeof (model as any).withStructuredOutput === 'function';
+        // OpenCode gateway is one of them, so it is driven as plain text. DeepSeek
+        // is driven the same way: its structured-output support is not verified
+        // here, and the parser below already accepts fenced or bare JSON.
+        const plainTextOnly = configuredModel?.provider === 'opencode' || configuredModel?.provider === 'deepseek';
+        const supportsStructuredOutput = !plainTextOnly && typeof (model as any).withStructuredOutput === 'function';
         const structuredModel = supportsStructuredOutput
           ? (model as any).withStructuredOutput(AgentPlanSchema, { name: 'negotiation_plan' })
           : undefined;

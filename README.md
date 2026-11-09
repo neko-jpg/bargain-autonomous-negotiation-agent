@@ -237,7 +237,7 @@ and how to add a language.
 | `BARGAIN_KILL_SWITCH=engaged` | Deploy-time kill switch. It cannot be released from the app. |
 | `BARGAIN_OPERATOR_TOKEN` | Operator token used for the kill switch, stop and reject. |
 | `BARGAIN_EFFECT_WEBHOOK_URL`, `BARGAIN_EFFECT_WEBHOOK_SECRET` | Makes the purchase a real HMAC-signed POST (with an `Idempotency-Key`) to your order system. Without them, a sandbox ledger records it. |
-| `BARGAIN_LLM_PROVIDER`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` | Optional model provider. |
+| `BARGAIN_LLM_PROVIDER`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY` | Optional model provider. `BARGAIN_LLM_PROVIDER` (`google`, `openai`, `opencode`, `deepseek`) picks one; unset, the first configured key in that order is used. With no key, the deterministic heuristic planner runs. `OPENCODE_BASE_URL` and `DEEPSEEK_BASE_URL` override the gateway address. |
 
 Cloudflare deployment (OpenNext + Wrangler + Hyperdrive) is described in
 [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md). Run the
