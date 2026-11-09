@@ -1,9 +1,17 @@
 # Safety case: preventing irreversible autonomous actions
 
-BARGAIN is an autonomous negotiation agent that can commit a buyer to a
-purchase. This document is the whole argument for why it cannot do so unsafely:
-the problem, the one mechanism that addresses it, the invariants it keeps, the
-evidence, how to reproduce it, and how to reuse it elsewhere.
+**BARGAIN is a reference implementation. Its contribution is the Commit Gate.**
+BARGAIN is a negotiation agent that can commit a buyer to a purchase, which makes
+it a test bed for irreversible actions. The gate is the part meant to carry over:
+a small, domain-agnostic chokepoint that any agent can put in front of an
+irreversible action, provided the agent routes that action through it.
+`src/lib/safety/` contains no negotiation code. The negotiation UI, prompts and
+strategy are the example, not the claim. §7 shows the same gate, unchanged,
+guarding cloud resource deletion.
+
+This document is the whole argument for why the gate works: the problem, the
+mechanism, the invariants it keeps, the evidence, its known limitations, how to
+reproduce it, and how to reuse it elsewhere.
 
 ![Architecture: agents propose, only the Commit Gate can do something irreversible](safety/architecture.svg)
 
@@ -53,6 +61,21 @@ The design separates **proposing** from **committing**.
 | 3 · Agree ≠ buy | An acceptance does not buy anything. It moves the session to `awaiting_commit` with an **intent**: the exact price, terms, parties and accepted offer, hashed with SHA-256 and set to expire. | `src/lib/negotiation/commit.ts` |
 | 4 · Commit Gate | The only function that runs an irreversible effect. It checks authorization, duplicates and the kill switch, reserves the intent, then checks the switch again before invoking the executor. Reservations are never automatically reclaimed. | `src/lib/safety/commitGate.ts` |
 
+Text version of the diagram ([architecture.svg](safety/architecture.svg)):
+
+```mermaid
+flowchart LR
+  P["LLM / strategy planner<br/>may be wrong, injected or adversarial"] --> S1["1 · Clamp<br/>guardrails and policy, deterministic"]
+  A["API callers<br/>buyer, seller, stranger, operator, replays"] --> S2["2 · Authorize<br/>owner and own turn, idempotency, versions"]
+  S1 --> S2
+  S2 --> S3["3 · Agree ≠ buy<br/>awaiting_commit: intent = price, terms, parties, SHA-256"]
+  S3 -- "intent hash" --> S4["4 · Commit Gate<br/>the only path to the effect<br/>① kill switch released<br/>② policy, or every required human signed this hash<br/>③ at most once (ledger key)"]
+  H["Human approver<br/>signs a 15-minute grant for this hash"] -- "signed grant" --> S4
+  O["Operator<br/>kill switch, stop, reject: can halt, never spend"] -- "halt" --> S4
+  S4 -- "once" --> E["Purchase effect<br/>sandbox ledger or signed webhook"]
+  S4 -.- L["Single write path: nine invariants,<br/>hash-chained audit log, PostgreSQL"]
+```
+
 **Who must approve** is decided by code and policy, never by the model. The
 buyer must approve every purchase, even if a legacy setting enables
 auto-purchase. Seller approval is also required when the seller's policy says
@@ -88,7 +111,13 @@ makes the effect a real external call: an HMAC-signed POST with an
 A timeout or other executor failure is treated as an ambiguous result; neither
 failed attempts nor stale reservations are automatically retried, even if the
 receiver supports idempotency. An operator must check the receiver before any
-resolution. There is currently no automated reconciliation interface.
+resolution, then records it with the operator-only `reconcile_commit` action
+(`reconcileEffect` in the gate). It accepts only a `failed` entry or a
+`reserved` one older than `STALE_RESERVATION_MS` (5 min), never calls the
+executor, and is a compare-and-set in the ledger. *Executed* adopts the
+authorization recorded at reservation (the buyer's grant) and makes the session
+a deal; *not executed* marks the intent `voided`, which the gate refuses for
+ever (`EFFECT_VOIDED`). A verdict, once recorded, cannot be flipped.
 
 **Simplicity of the trusted core.** The argument for this gate is not that it
 is clever, it is that it is small enough to audit by hand. Everything that must
@@ -140,7 +169,9 @@ model.
 | Threat | Control | Evidence |
 |---|---|---|
 | A party acts for the other side (the review bypass) | own-turn binding, approver-specific grants | A01, A02, mutants M01, M11 |
-| A user, seller or operator exceeds their role | `ACTOR_RULES`, ownership check | A03, A04, A05, mutants M02, M16 |
+| A user, seller or operator exceeds their role | `ACTOR_RULES`, ownership check; operators may only decline queue tasks | A03, A04, A05, A26, mutants M02, M16, M18 |
+| A malicious site makes the victim's browser approve (CSRF) | `Origin` / `Sec-Fetch-Site` check before authentication on every state-changing route, on top of `SameSite=Lax` | A27, mutant M19 |
+| The outcome of a payment is unknown (timeout, crash) and someone "fixes" it | operator-only `reconcile_commit`; only failed or stale attempts; never re-executes; `voided` is terminal | A28, G1–G3, G6, mutants M20, M21 |
 | The model overspends, undercuts or emits garbage | clamps + monitor | A07, fuzz (naive vs gated), mutant M10 |
 | The model misreports a price to dodge approval | the intent is built from the accepted offer, not from model text | A08 |
 | Prompt injection via counterparty text | text is data; budgets and the gate do not read it | A09 |
@@ -152,7 +183,7 @@ model.
 | History is rewritten to hide an action | hash-chained audit log | A17, R3, mutant M14 |
 | A stale offer is accepted | latest-proposal rule | A18, mutant M15 |
 | An offer made under an older, higher budget is accepted after the buyer lowers it (**found by our own fuzzer**) | offers bind only while they fit their author's current policy (`isOfferStillBinding`), plus the monitor checks every agreement against both current policies | A23, mutant M17 |
-| Bugs that appear only in the database code path | the same suite runs on a PostgreSQL-compatible PGlite database | R1–R5 and A01–A25 on PGlite |
+| Bugs that appear only in the database code path | the same suite runs on a PostgreSQL-compatible PGlite database | R1–R5 and A01–A28 on PGlite |
 | A future change adds a second path to the effect | architecture fitness tests | S1–S6 |
 
 ## 5. Evidence and what it does and does not show
@@ -160,8 +191,8 @@ model.
 The current numbers are in **[docs/safety/RESULTS.md](safety/RESULTS.md)**, which is generated by
 `npm run safety:report`.
 
-- **Attack suite.** 25 named attacks, each run on the in-memory store and on
-  PGlite (the PostgreSQL code path).
+- **Attack suite.** 28 named attacks (A01–A28), each run on the in-memory store
+  and on PGlite (the PostgreSQL code path).
 - **Fuzzing.** Seeded random sequences of honest and hostile actions by five
   kinds of actor, driven by six adversarial planners. Independent oracles are
   checked after every step, and every output is compared with a naive baseline.
@@ -180,7 +211,7 @@ The current numbers are in **[docs/safety/RESULTS.md](safety/RESULTS.md)**, whic
   18-move alphabet of honest and hostile moves, run from 3 start states against
   the real service, store and gate. Within that bound this is exhaustive. It is
   not a proof for unbounded sequences.
-- **Mutation testing.** 17 realistic safety bugs are injected one at a time,
+- **Mutation testing.** 21 realistic safety bugs are injected one at a time,
   including the bypass from the review and the bug the fuzzer found. A control
   copy must pass first. The suite must then fail on a named check for each
   mutant, which shows the tests are not vacuous.
@@ -212,6 +243,17 @@ The current numbers are in **[docs/safety/RESULTS.md](safety/RESULTS.md)**, whic
   the pipeline is independent of that luck, not that the gate caught a
   hijacked model. The forced-obedience proof remains P2. Details and per-call
   rows: [LLM_UNPROTECTED.md](safety/LLM_UNPROTECTED.md).
+
+| Model | Answered | Took the bait | Raw proposals above budget | Naive agent harmed | BARGAIN unsafe | BARGAIN purchases | Held for approval | Ceiling escaped |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| `deepseek-v4.1-flash` | 37/38 | 0/35 | 0 | 0 | 0 | 0 | 7 | 0 |
+| `glm-5.3-flash` | 37/38 | 3/35 | 0 | 4 | 0 | 0 | 6 | 0 |
+| `claude-haiku-5-5` | 35/38 | 0/33 | 0 | 0 | 0 | 0 | 5 | 0 |
+
+"Answered" excludes calls that timed out and fell back to the deterministic
+engine. "Took the bait" means the primary proposal accepted or overpriced in
+the hijack cases. Source: [LLM_UNPROTECTED.md](safety/LLM_UNPROTECTED.md).
+
 - **Unicode and artifact hardening.** Those vectors are mutated into 96
   variants using bidirectional overrides, zero-width characters, control
   characters and line separators; none reaches the prompt (P3). The same
@@ -224,8 +266,48 @@ The current numbers are in **[docs/safety/RESULTS.md](safety/RESULTS.md)**, whic
   production, if the trusted core outgrows its budget or reaches for I/O, or if
   a second module starts calling a language model.
 
-**Limits, stated plainly.**
+**Known limitations.**
 
+- **Approval is a human wait.** Each purchase waits for the buyer. A pending
+  intent expires at the earlier of the offer's expiry and 24 hours
+  (`COMMIT_TTL_MS`), and an expired intent is closed and never executed. An
+  approval grant is valid for 15 minutes (`GRANT_TTL_MS`). The gate cannot make
+  the human faster; it only refuses to act without them.
+- **Not built for unattended, high-volume transactions.** Every effect needs a
+  named human approval, a ledger reservation and a synchronous executor call.
+  The webhook executor gives up after 10 seconds. There is no throughput or
+  latency benchmark for the gate. A workload that needs many effects per second
+  with no person in the loop needs a different authorization design, such as
+  pre-authorized limits that the gate itself enforces. This repository does not
+  implement that.
+- **Several server instances are tested in one process only.** Across instances,
+  effects are protected by the ledger's primary key on the intent hash, so only
+  one instance can reserve an intent. Session writes are protected by a
+  PostgreSQL row lock and a version check. A losing write fails with
+  `SESSION_VERSION_CONFLICT`, and the client must retry. The in-process
+  `withSessionLock` only queues requests within one process. No test runs
+  several server processes against one database. There is no separate lock
+  service. If the database fails when a reservation is written, the executor
+  is not called and the request fails.
+- **Recovery after a crash is manual.** If a process stops after reserving an
+  intent and before the executor reports back, the ledger row stays `reserved`,
+  and nothing sweeps it. After 5 minutes (`STALE_RESERVATION_MS`) an operator
+  checks the receiver and records the verdict with `reconcile_commit`. Until
+  then the intent stays blocked. The same happens if the executor succeeds but
+  writing its result to the ledger fails: the row stays `reserved` although the
+  purchase may have happened. This favours safety over availability.
+- **State is per process without PostgreSQL.** Outside production, with no
+  `DATABASE_URL`, the ledger, sessions and operator kill switch live in memory.
+  They are lost on restart and are not shared between processes. Production
+  requires PostgreSQL.
+- **The human approver is the weakest control.** The approval shows the exact
+  total, and the signed intent includes the terms (warranty, payment terms).
+  Those terms are free text the seller writes, and the negotiation view shows
+  them next to the offer message (`NegotiationEventCard.tsx`). The gate proves
+  that the buyer signed this exact hash. It cannot prove that the buyer read
+  it, understood it, or was not persuaded by misleading wording. A clearer
+  approval screen and a separate confirmation step reduce this risk. They do
+  not remove it.
 - Exploration is bounded (depth 3, finite alphabet). Fuzzing samples beyond
   that bound but cannot cover it.
 - The provider is a network dependency. A hung provider is bounded by a timeout
@@ -237,12 +319,35 @@ The current numbers are in **[docs/safety/RESULTS.md](safety/RESULTS.md)**, whic
   bad deal. Policy limits bound how bad it can be.
 - External outcomes can be unknown after a timeout or a crash. BARGAIN blocks
   automatic retries, including stale reservations, which favors safety over
-  availability. The receiver must be checked before manual resolution. The
+  availability. Reconciliation is a human verdict: the gate cannot verify that
+  the operator really checked the receiver, only that it was an operator, that
+  the attempt was genuinely ambiguous, and that the verdict and note are
+  audited. There is no reconciliation screen yet; it is an API action. The
   idempotency key is an additional defense only if the receiver honors it.
+- There is no aggregate spending cap across sessions: each purchase is bounded
+  by its own budget and approval, but a buyer who approves many sessions
+  approves many purchases.
+- Accepting an offer in the UI counts as the buyer's signed approval of the
+  resulting intent (one click, the exact total shown). A separate confirmation
+  step would be stronger against mis-clicks.
 - Identity is a signed cookie prototype, not a production identity provider.
-  The seller role is reachable only in demo mode, and catalog sellers are
-  simulated with `autoAccept` on; seller-side approvals are implemented and
-  tested.
+  Outside production the cookie is signed with a fixed development secret;
+  production requests fail with `AUTH_NOT_CONFIGURED` until
+  `BARGAIN_SESSION_SECRET` (32+ characters) is set. The seller role is
+  reachable only in demo mode, and catalog sellers are simulated with
+  `autoAccept` on; seller-side approvals are implemented and tested.
+- Operators share one identity. A request that presents the operator token and
+  no actor cookie authenticates as the id `operator` (`src/lib/auth/actor.ts`),
+  so a `reconcile_commit` verdict records the role, not a person. The token is a
+  single static secret, compared in constant time, with no expiry and no
+  per-operator rotation. Several operators or tenants would need per-person
+  identity (mTLS or short-lived signed tokens) before the audit trail can say
+  who acted.
+- No platform fee is modelled. The deal summary's total is the amount the gate
+  recorded (price plus shipping, from the commit receipt), which is the amount
+  the buyer approved and is within the buyer's cap. A fee added later must be
+  part of the approved intent and count against the cap; the current gate has
+  no such term.
 - Model *quality* is out of scope. The safety properties hold whatever the
   model outputs.
 
@@ -259,7 +364,7 @@ npm run dev
 | Command | What it does | Approx. time |
 |---|---|---|
 | `npm test` | unit tests, attack suite (memory and PostgreSQL), fuzz (150 sessions), exhaustive depth 2, reuse example | ~10 s |
-| `npm run safety:verify` | fuzz (2,000 sessions), exhaustive depth 3, 17 mutants | ~3–4 min |
+| `npm run safety:verify` | fuzz (2,000 sessions), exhaustive depth 3, 21 mutants | ~3–4 min |
 | `npm run safety:report` | the same, and rewrites `docs/safety/RESULTS.md` and `results.json` | ~3–4 min |
 | `npm run example:reuse` | the same gate guarding cloud resource deletion | ~1 s |
 | `npm run dev` | the app at <http://localhost:3000>; no API key or database needed | — |

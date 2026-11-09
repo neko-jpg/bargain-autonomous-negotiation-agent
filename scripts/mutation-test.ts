@@ -80,6 +80,18 @@ export const MUTANTS: Mutant[] = [
     { file: 'src/lib/negotiation/service.ts', find: "if (!isOfferStillBinding(session, target)) throw new NegotiationServiceError('TARGET_OFFER_WITHDRAWN');", replace: '' },
     { file: 'src/lib/agent/negotiationGraph.ts', find: 'if (targetVersionMatches && isOfferStillBinding(session, target) && ', replace: 'if (targetVersionMatches && ' },
   ] },
+  { id: 'M18', title: 'Operators may approve contracts on behalf of the buyer', edits: [
+    { file: 'src/lib/negotiation/workflowStore.ts', find: "if (actor.role === 'operator' && decision === 'approve' && task.kind !== 'commit') throw new Error('APPROVAL_FORBIDDEN');", replace: '' },
+  ] },
+  { id: 'M19', title: 'No Origin / Sec-Fetch-Site check on state-changing requests (CSRF)', edits: [
+    { file: 'src/lib/auth/actor.ts', find: 'if (SAFE_METHODS.has(request.method.toUpperCase())) return;', replace: 'return;' },
+  ] },
+  { id: 'M20', title: 'A party may reconcile (declare the outcome of) its own purchase', edits: [
+    { file: 'src/lib/negotiation/service.ts', find: "reconcile_commit: ['operator'],", replace: "reconcile_commit: ['party', 'operator']," },
+  ] },
+  { id: 'M21', title: 'Reconciliation allowed while an attempt may still be running', edits: [
+    { file: 'src/lib/safety/commitGate.ts', find: "if (entry.status !== 'failed' && !stale) throw new SafetyError('EFFECT_NOT_RECONCILABLE', { status: entry.status });", replace: '' },
+  ] },
 ];
 
 export interface MutantResult {

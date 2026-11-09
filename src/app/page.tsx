@@ -13,19 +13,38 @@ import { SellerDashboardView } from '@/components/SellerDashboardView';
 import { DashboardView } from '@/components/DashboardView';
 import { DealSummaryView } from '@/components/DealSummaryView';
 import { DEMO_CATALOG_ID, getCatalogListings, type CatalogCategoryId } from '@/lib/catalog/catalogAdapter';
+import { useI18n } from '@/lib/i18n/provider';
 
 const SESSION_STORAGE_KEY = 'bargain:active-session';
 const SELLER_LISTING_STORAGE_KEY = 'bargain:seller-console-listing';
 const VALID_SCREENS: ActiveScreen[] = ['marketplace', 'product-detail', 'negotiation-live', 'negotiation-detail', 'seller-dashboard', 'dashboard', 'deal-summary'];
 
-async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 15_000) {
+/**
+ * Requests from this screen only ever target this app's own API routes.
+ * The allow-list keeps the generic fetch wrapper from becoming an SSRF sink:
+ * absolute or cross-origin URLs are rejected before any network call.
+ */
+const ALLOWED_API_PREFIX = '/api/';
+
+function allowedApiPath(apiPath: string): string {
+  const isRelativeApiPath = apiPath.startsWith(ALLOWED_API_PREFIX);
+  const isSameOriginApiPath = typeof window !== 'undefined'
+    && apiPath.startsWith(`${window.location.origin}${ALLOWED_API_PREFIX}`);
+  if (!isRelativeApiPath && !isSameOriginApiPath) {
+    throw new Error(`Blocked request target: ${apiPath}`);
+  }
+  return apiPath;
+}
+
+async function fetchWithTimeout(apiPath: string, init?: RequestInit, timeoutMs = 15_000, timeoutMessage = 'Request timed out.') {
+  const safeApiPath = allowedApiPath(apiPath);
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetch(safeApiPath, { ...init, signal: controller.signal });
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('サーバーからの応答がタイムアウトしました。開発サーバーを再起動して再試行してください。');
+      throw new Error(timeoutMessage);
     }
     throw error;
   } finally {
@@ -34,6 +53,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
 }
 
 export default function Home() {
+  const { t, formatYen } = useI18n();
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>('marketplace');
   const [activeCategory, setActiveCategory] = useState<CatalogCategoryId>('all');
   const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
@@ -83,18 +103,18 @@ export default function Home() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ listingId, buyerPolicy }),
-    });
+    }, 15_000, t('app.timeout'));
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.message ?? '交渉セッションを作成できませんでした。');
+    if (!response.ok) throw new Error(payload.message ?? t('app.errorCreateSession'));
     return payload.session as PublicNegotiationSession;
-  }, []);
+  }, [t]);
 
   const getInitialSession = useCallback(() => {
     if (!initialSessionPromise.current) {
       initialSessionPromise.current = (async () => {
         const savedId = window.localStorage.getItem(SESSION_STORAGE_KEY);
         if (savedId) {
-          const response = await fetchWithTimeout(`/api/negotiations/${encodeURIComponent(savedId)}`, { cache: 'no-store' });
+          const response = await fetchWithTimeout(`/api/negotiations/${encodeURIComponent(savedId)}`, { cache: 'no-store' }, 15_000, t('app.timeout'));
           if (response.ok) {
             const payload = await response.json();
             if (payload.session) return payload.session as PublicNegotiationSession;
@@ -105,7 +125,7 @@ export default function Home() {
       })();
     }
     return initialSessionPromise.current;
-  }, [createSession]);
+  }, [createSession, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,7 +134,7 @@ export default function Home() {
         const nextSession = await getInitialSession();
         if (!cancelled) persistSession(nextSession);
       } catch (error) {
-        if (!cancelled) setLoadError(error instanceof Error ? error.message : '画面を読み込めませんでした。');
+        if (!cancelled) setLoadError(error instanceof Error ? error.message : t('app.loadErrorFallback'));
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -133,7 +153,7 @@ export default function Home() {
       window.removeEventListener('hashchange', onHashChange);
       window.removeEventListener('popstate', onHashChange);
     };
-  }, [getInitialSession, persistSession]);
+  }, [getInitialSession, persistSession, t]);
 
   const handleSelectCategory = useCallback((categoryId: CatalogCategoryId) => {
     setActiveCategory(categoryId);
@@ -157,8 +177,8 @@ export default function Home() {
         return;
       }
     }
-    toast.info(`「${query}」に一致する商品はありません。`);
-  }, [handleSelectListing]);
+    toast.info(t('market.searchNoMatch', { query }));
+  }, [handleSelectListing, t]);
 
   const activeListing = selectedListing ?? session?.listing;
   const sellerListing = allListings.find((listing) => listing.id === sellerListingId) ?? session?.listing ?? allListings[0];
@@ -170,11 +190,11 @@ export default function Home() {
       const nextSession = await createSession(activeListing.id, policy);
       persistSession(nextSession);
       navigate('negotiation-live');
-      toast.success('交渉セッションを作成しました。');
+      toast.success(t('app.sessionCreated'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '交渉を開始できませんでした。');
+      toast.error(error instanceof Error ? error.message : t('app.errorStartNegotiation'));
     }
-  }, [activeListing, createSession, navigate, persistSession]);
+  }, [activeListing, createSession, navigate, persistSession, t]);
 
   const handleBuyNow = useCallback(async (price: number) => {
     if (!activeListing) return;
@@ -184,24 +204,24 @@ export default function Home() {
       const offerResponse = await fetchWithTimeout(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'human_offer', expectedVersion: created.version, idempotencyKey: `${created.id}-buy-offer`, offerPrice: price, messageText: '表示価格で購入します。' }),
-      });
+        body: JSON.stringify({ type: 'human_offer', expectedVersion: created.version, idempotencyKey: `${created.id}-buy-offer`, offerPrice: price, messageText: t('app.buyOfferMessage') }),
+      }, 15_000, t('app.timeout'));
       const offerPayload = await offerResponse.json();
-      if (!offerResponse.ok) throw new Error(offerPayload.message ?? '購入確認を作成できませんでした。');
+      if (!offerResponse.ok) throw new Error(offerPayload.message ?? t('app.errorBuyOffer'));
       const nextStep = await fetchWithTimeout(`/api/negotiations/${created.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'auto_step', expectedVersion: offerPayload.session.version, idempotencyKey: `${created.id}-buy-response` }),
-      });
+      }, 15_000, t('app.timeout'));
       const nextPayload = await nextStep.json();
-      if (!nextStep.ok) throw new Error(nextPayload.message ?? '売り手側の応答を取得できませんでした。');
+      if (!nextStep.ok) throw new Error(nextPayload.message ?? t('app.errorSellerResponse'));
       persistSession(nextPayload.session);
       navigate(nextPayload.session.status === 'deal' ? 'deal-summary' : 'negotiation-live');
-      toast.success(nextPayload.session.status === 'deal' ? '購入確認を完了しました。' : nextPayload.session.status === 'awaiting_commit' ? '合意しました。購入確定の承認をお願いします。' : '購入オファーを送信しました。');
+      toast.success(nextPayload.session.status === 'deal' ? t('app.buyComplete') : nextPayload.session.status === 'awaiting_commit' ? t('app.buyAwaitingApproval') : t('app.buyOfferSent'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '購入確認を作成できませんでした。');
+      toast.error(error instanceof Error ? error.message : t('app.errorBuyOffer'));
     }
-  }, [activeListing, createSession, navigate, persistSession]);
+  }, [activeListing, createSession, navigate, persistSession, t]);
 
   const handleRunSwitchDemo = useCallback(async () => {
     if (isDemoRunning) return;
@@ -209,11 +229,11 @@ export default function Home() {
     try {
       const startResponse = await fetch('/api/simulation/switch-demo', { method: 'POST' });
       const startPayload = await startResponse.json();
-      if (!startResponse.ok) throw new Error(startPayload.message ?? 'デモを開始できませんでした。');
+      if (!startResponse.ok) throw new Error(startPayload.message ?? t('app.errorDemoStart'));
       let current = startPayload.session as PublicNegotiationSession;
       persistSession(current);
       navigate('negotiation-live');
-      toast.info('Curated 6-Stepデモを開始しました。');
+      toast.info(t('app.demoStarted'));
 
       for (let stepIndex = 0; stepIndex < 6; stepIndex += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 650));
@@ -223,21 +243,21 @@ export default function Home() {
           body: JSON.stringify({ sessionId: current.id, stepIndex }),
         });
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.message ?? 'デモのステップを実行できませんでした。');
+        if (!response.ok) throw new Error(payload.message ?? t('app.errorDemoStep'));
         current = payload.session as PublicNegotiationSession;
         persistSession(current);
         if (payload.isCompleted) {
           navigate('deal-summary');
-          toast.success(`DEALが成立しました。合意価格 ${current.dealSummary?.agreedPrice.toLocaleString('ja-JP')}円`);
+          toast.success(t('app.demoDeal', { price: formatYen(current.dealSummary?.agreedPrice ?? 0) }));
           break;
         }
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'デモ実行中にエラーが発生しました。');
+      toast.error(error instanceof Error ? error.message : t('app.errorDemo'));
     } finally {
       setIsDemoRunning(false);
     }
-  }, [isDemoRunning, navigate, persistSession]);
+  }, [formatYen, isDemoRunning, navigate, persistSession, t]);
 
   const handleRunApiNegotiation = useCallback(async () => {
     if (isApiNegotiationStarting) return;
@@ -254,17 +274,17 @@ export default function Home() {
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.message ?? 'API経由の交渉を開始できませんでした。');
+      if (!response.ok) throw new Error(payload.message ?? t('app.errorApiStart'));
       const nextSession = payload.session as PublicNegotiationSession;
       persistSession(nextSession);
       navigate(nextSession.status === 'deal' ? 'deal-summary' : 'negotiation-live');
-      toast.success('LLM API経由の交渉を開始しました。');
+      toast.success(t('app.apiStarted'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'API経由の交渉を開始できませんでした。');
+      toast.error(error instanceof Error ? error.message : t('app.errorApiStart'));
     } finally {
       setIsApiNegotiationStarting(false);
     }
-  }, [createSession, isApiNegotiationStarting, navigate, persistSession]);
+  }, [createSession, isApiNegotiationStarting, navigate, persistSession, t]);
 
   const handleOpenSellerNegotiation = useCallback(async () => {
     if (!sellerListing) return;
@@ -276,18 +296,18 @@ export default function Home() {
       const nextSession = await createSession(sellerListing.id);
       persistSession(nextSession);
       navigate('negotiation-live');
-      toast.success(`${sellerListing.title}の交渉セッションを作成しました。`);
+      toast.success(t('app.sellerSessionCreated', { title: sellerListing.title }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : '交渉セッションを作成できませんでした。');
+      toast.error(error instanceof Error ? error.message : t('app.errorCreateSession'));
     }
-  }, [createSession, navigate, persistSession, sellerListing, sellerSession]);
+  }, [createSession, navigate, persistSession, sellerListing, sellerSession, t]);
 
   const handleOpenSellerListing = useCallback(() => {
     if (sellerListing) handleSelectListing(sellerListing);
   }, [handleSelectListing, sellerListing]);
 
-  if (isLoading) return <div className="app-loading"><span className="loading-dot" />BARGAINを準備しています…</div>;
-  if (loadError || !session || !activeListing) return <div className="app-loading app-loading--error"><p className="text-lg font-bold text-slate-950">読み込みに失敗しました</p><p className="text-sm text-slate-600">{loadError}</p><button onClick={() => window.location.reload()} className="primary-button">再読み込み</button></div>;
+  if (isLoading) return <div className="app-loading"><span className="loading-dot" />{t('app.loading')}</div>;
+  if (loadError || !session || !activeListing) return <div className="app-loading app-loading--error"><p className="text-lg font-bold text-slate-950">{t('app.loadErrorTitle')}</p><p className="text-sm text-slate-600">{loadError}</p><button onClick={() => window.location.reload()} className="primary-button">{t('common.reload')}</button></div>;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -307,7 +327,7 @@ export default function Home() {
             </motion.div>
           </AnimatePresence>
         </main>
-        <footer className="site-footer"><div className="page-container flex flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between"><p className="font-semibold text-slate-800">BARGAIN — Autonomous Negotiation Agent</p><p>AIの予測は目安であり、成約を保証するものではありません。</p></div></footer>
+        <footer className="site-footer"><div className="page-container flex flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between"><p className="font-semibold text-slate-800">{t('common.appName')} — {t('common.appTagline')}</p><p>{t('common.disclaimer')}</p></div></footer>
       </div>
     </MotionConfig>
   );

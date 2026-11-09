@@ -1,38 +1,50 @@
 import {
   BuyerPolicy,
   Listing,
+  LocalizedMessage,
   NegotiationTerms,
   SellerPolicy,
 } from '@/types/negotiation';
 import { normalizeNegotiationTerms, totalOfferCost } from '@/lib/negotiation/terms';
+import { DEFAULT_LOCALE } from '@/lib/i18n/config';
+import { translate } from '@/lib/i18n/dictionary';
 
 export interface PolicyDecision {
   price: number;
   terms: NegotiationTerms;
   correctionReason?: string;
+  /** Structured form of `correctionReason`, so the UI can re-render it. */
+  correctionReasons?: LocalizedMessage[];
   requiresHumanApproval: boolean;
   approvalReason?: string;
+  /** Structured form of `approvalReason`. */
+  approvalReasonTemplate?: LocalizedMessage;
   effectiveFloor?: number;
   effectiveCeiling?: number;
 }
 
-function addCorrection(corrections: string[], message: string) {
-  corrections.push(message);
+/** Renders a structured reason in the server's source language. */
+function renderReason(template: LocalizedMessage | undefined): string | undefined {
+  return template ? translate(DEFAULT_LOCALE, template.key, template.params) : undefined;
 }
 
-function joinCorrections(corrections: string[]) {
-  return corrections.length > 0 ? corrections.join(' ') : undefined;
+function addCorrection(corrections: LocalizedMessage[], template: LocalizedMessage) {
+  corrections.push(template);
+}
+
+function joinCorrections(corrections: LocalizedMessage[]) {
+  return corrections.length > 0 ? corrections.map((item) => renderReason(item) ?? '').join(' ') : undefined;
 }
 
 function clampToAllowedPaymentTerms(
   paymentTerms: string,
   allowedPaymentTerms: string[] | undefined,
-  corrections: string[]
+  corrections: LocalizedMessage[]
 ) {
   if (!allowedPaymentTerms || allowedPaymentTerms.length === 0 || allowedPaymentTerms.includes(paymentTerms)) {
     return paymentTerms;
   }
-  addCorrection(corrections, `支払条件を許可済みの「${allowedPaymentTerms[0]}」に補正しました。`);
+  addCorrection(corrections, { key: 'reason.policy.paymentTerms', params: { term: allowedPaymentTerms[0] } });
   return allowedPaymentTerms[0];
 }
 
@@ -59,19 +71,29 @@ export function isOfferStillBinding(session: { buyerPolicy: BuyerPolicy; sellerP
  * The reason mentions private limits, so show it only to the buyer.
  */
 export function buyerCommitApprovalReason(policy: BuyerPolicy, total: number): string | undefined {
-  if (total > policy.maxPrice) return '総額が上限価格を超えるため、人間の承認が必要です。';
-  if (!policy.autoPurchase) return '自動購入がオフのため、購入確定には人間の承認が必要です。';
+  return renderReason(buyerCommitApprovalTemplate(policy, total));
+}
+
+/** Structured form of the buyer approval reason, used to localise the UI. */
+export function buyerCommitApprovalTemplate(policy: BuyerPolicy, total: number): LocalizedMessage | undefined {
+  if (total > policy.maxPrice) return { key: 'reason.policy.buyerCommitAboveMax' };
+  if (!policy.autoPurchase) return { key: 'reason.policy.buyerCommitAutoOff' };
   const limit = policy.autoApprovalMaxPrice ?? policy.maxPrice;
-  if (total > limit) return '総額が自動承認上限を超えるため、人間の承認が必要です。';
+  if (total > limit) return { key: 'reason.policy.buyerCommitAboveAuto' };
   return undefined;
 }
 
 /** Seller-side counterpart of buyerCommitApprovalReason. */
 export function sellerCommitApprovalReason(policy: SellerPolicy, price: number): string | undefined {
+  return renderReason(sellerCommitApprovalTemplate(policy, price));
+}
+
+/** Structured form of the seller approval reason, used to localise the UI. */
+export function sellerCommitApprovalTemplate(policy: SellerPolicy, price: number): LocalizedMessage | undefined {
   const floor = effectiveSellerFloor(policy);
-  if (price < floor) return '売り手の実効最低価格を下回るため、人間の承認が必要です。';
-  if (!policy.autoAccept) return '自動受諾がオフのため、売却確定には人間の承認が必要です。';
-  if (price < (policy.autoApprovalMinPrice ?? floor)) return '自動承認下限を下回るため、人間の承認が必要です。';
+  if (price < floor) return { key: 'reason.policy.sellerCommitBelowFloor' };
+  if (!policy.autoAccept) return { key: 'reason.policy.sellerCommitAutoOff' };
+  if (price < (policy.autoApprovalMinPrice ?? floor)) return { key: 'reason.policy.sellerCommitBelowAuto' };
   return undefined;
 }
 
@@ -83,7 +105,7 @@ export function sanitizeOfferByPolicy(
   inputTerms?: Partial<NegotiationTerms>,
   action: 'make_offer' | 'counter_offer' | 'accept_offer' | 'reject_offer' | 'wait' | 'ask_user' = 'counter_offer'
 ): PolicyDecision {
-  const corrections: string[] = [];
+  const corrections: LocalizedMessage[] = [];
   const terms = normalizeNegotiationTerms(listing, inputTerms);
   // Units are not a negotiable dimension here: a listing has fixed stock and
   // the quoted price is the price of the whole lot. Anything above stock is a
@@ -93,7 +115,7 @@ export function sanitizeOfferByPolicy(
     : 1;
   if (terms.quantity > stock) {
     terms.quantity = stock;
-    addCorrection(corrections, `数量を在庫数（${stock}点）に補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.quantityStock', params: { stock } });
   }
   let sanitizedPrice = Number.isFinite(price) ? Math.max(0, Math.round(price)) : 0;
 
@@ -102,45 +124,48 @@ export function sanitizeOfferByPolicy(
     const maxShippingCost = buyerPolicy.maxShippingCost ?? Number.MAX_SAFE_INTEGER;
     if (terms.shippingCost > maxShippingCost) {
       terms.shippingCost = maxShippingCost;
-      addCorrection(corrections, `送料を上限¥${maxShippingCost.toLocaleString()}に補正しました。`);
+      addCorrection(corrections, { key: 'reason.policy.shippingCap', params: { max: maxShippingCost } });
     }
     if (buyerPolicy.maxDeliveryDays && terms.deliveryDays > buyerPolicy.maxDeliveryDays) {
       terms.deliveryDays = buyerPolicy.maxDeliveryDays;
-      addCorrection(corrections, `納期を${buyerPolicy.maxDeliveryDays}日以内に補正しました。`);
+      addCorrection(corrections, { key: 'reason.policy.deliveryCap', params: { days: buyerPolicy.maxDeliveryDays } });
     }
     if (buyerPolicy.minQuantity && terms.quantity < buyerPolicy.minQuantity) {
       terms.quantity = buyerPolicy.minQuantity;
-      addCorrection(corrections, `数量を最低${buyerPolicy.minQuantity}個に補正しました。`);
+      addCorrection(corrections, { key: 'reason.policy.quantityMin', params: { min: buyerPolicy.minQuantity } });
     }
     if (buyerPolicy.requiredCurrency && terms.currency !== buyerPolicy.requiredCurrency.toUpperCase()) {
       terms.currency = buyerPolicy.requiredCurrency.toUpperCase();
-      addCorrection(corrections, `通貨を${terms.currency}に補正しました。`);
+      addCorrection(corrections, { key: 'reason.policy.currency', params: { currency: terms.currency } });
     }
     if (buyerPolicy.requireTaxIncluded && !terms.taxIncluded) {
       terms.taxIncluded = true;
-      addCorrection(corrections, '税込条件に補正しました。');
+      addCorrection(corrections, { key: 'reason.policy.taxIncluded' });
     }
     terms.paymentTerms = clampToAllowedPaymentTerms(terms.paymentTerms, buyerPolicy.allowedPaymentTerms, corrections);
 
     const maxItemPrice = Math.max(0, buyerPolicy.maxPrice - terms.shippingCost);
     if (sanitizedPrice > maxItemPrice) {
       sanitizedPrice = maxItemPrice;
-      addCorrection(corrections, `総額上限¥${buyerPolicy.maxPrice.toLocaleString()}以内に補正しました。`);
+      addCorrection(corrections, { key: 'reason.policy.buyerTotalCap', params: { max: buyerPolicy.maxPrice } });
     }
     if (sanitizedPrice > listing.price) {
       sanitizedPrice = listing.price;
-      addCorrection(corrections, '出品価格を超えないように補正しました。');
+      addCorrection(corrections, { key: 'reason.policy.notAboveListing' });
     }
 
     const requiresHumanApproval = action === 'accept_offer'
-      ? buyerCommitApprovalReason(buyerPolicy, totalOfferCost(sanitizedPrice, terms)) !== undefined
+      ? buyerCommitApprovalTemplate(buyerPolicy, totalOfferCost(sanitizedPrice, terms)) !== undefined
       : false;
+    const buyerApprovalTemplate: LocalizedMessage | undefined = requiresHumanApproval ? { key: 'reason.policy.buyerApproval' } : undefined;
     return {
       price: sanitizedPrice,
       terms,
       correctionReason: joinCorrections(corrections),
+      correctionReasons: corrections.length > 0 ? [...corrections] : undefined,
       requiresHumanApproval,
-      approvalReason: requiresHumanApproval ? '買い手の承認条件を満たしていないため、最終受諾に人間承認が必要です。' : undefined,
+      approvalReason: renderReason(buyerApprovalTemplate),
+      approvalReasonTemplate: buyerApprovalTemplate,
       effectiveCeiling: buyerPolicy.maxPrice,
     };
   }
@@ -150,40 +175,43 @@ export function sanitizeOfferByPolicy(
   const maxShippingCost = sellerPolicy.maxShippingCost ?? Number.MAX_SAFE_INTEGER;
   if (terms.shippingCost > maxShippingCost) {
     terms.shippingCost = maxShippingCost;
-    addCorrection(corrections, `送料を上限¥${maxShippingCost.toLocaleString()}に補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.shippingCap', params: { max: maxShippingCost } });
   }
   if (sellerPolicy.maxDeliveryDays && terms.deliveryDays > sellerPolicy.maxDeliveryDays) {
     terms.deliveryDays = sellerPolicy.maxDeliveryDays;
-    addCorrection(corrections, `納期を${sellerPolicy.maxDeliveryDays}日以内に補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.deliveryCap', params: { days: sellerPolicy.maxDeliveryDays } });
   }
   if (sellerPolicy.minQuantity && terms.quantity < sellerPolicy.minQuantity) {
     terms.quantity = sellerPolicy.minQuantity;
-    addCorrection(corrections, `数量を最低${sellerPolicy.minQuantity}個に補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.quantityMin', params: { min: sellerPolicy.minQuantity } });
   }
   if (sellerPolicy.requiredCurrency && terms.currency !== sellerPolicy.requiredCurrency.toUpperCase()) {
     terms.currency = sellerPolicy.requiredCurrency.toUpperCase();
-    addCorrection(corrections, `通貨を${terms.currency}に補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.currency', params: { currency: terms.currency } });
   }
   if (sellerPolicy.requireTaxIncluded && !terms.taxIncluded) {
     terms.taxIncluded = true;
-    addCorrection(corrections, '税込条件に補正しました。');
+    addCorrection(corrections, { key: 'reason.policy.taxIncluded' });
   }
   terms.paymentTerms = clampToAllowedPaymentTerms(terms.paymentTerms, sellerPolicy.allowedPaymentTerms, corrections);
 
   if (sanitizedPrice < floor) {
     sanitizedPrice = floor;
-    addCorrection(corrections, `売り手の実効最低価格¥${floor.toLocaleString()}を下回らないように補正しました。`);
+    addCorrection(corrections, { key: 'reason.policy.sellerFloor', params: { floor } });
   }
 
   const requiresHumanApproval = action === 'accept_offer'
-    ? sellerCommitApprovalReason(sellerPolicy, sanitizedPrice) !== undefined
+    ? sellerCommitApprovalTemplate(sellerPolicy, sanitizedPrice) !== undefined
     : false;
+  const sellerApprovalTemplate: LocalizedMessage | undefined = requiresHumanApproval ? { key: 'reason.policy.sellerApproval' } : undefined;
   return {
     price: sanitizedPrice,
     terms,
     correctionReason: joinCorrections(corrections),
+    correctionReasons: corrections.length > 0 ? [...corrections] : undefined,
     requiresHumanApproval,
-    approvalReason: requiresHumanApproval ? '売り手の承認条件を満たしていないため、最終受諾に人間承認が必要です。' : undefined,
+    approvalReason: renderReason(sellerApprovalTemplate),
+    approvalReasonTemplate: sellerApprovalTemplate,
     effectiveFloor: floor,
   };
 }

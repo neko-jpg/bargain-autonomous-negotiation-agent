@@ -8,6 +8,7 @@ import { CheckCircle2, Download, ExternalLink, PackageCheck, ShieldCheck, Star, 
 import { PublicCommitReceipt, PublicDealSummary, Listing, NegotiationOfferView } from '@/types/negotiation';
 import { NegotiationEventCard } from '@/components/NegotiationEventCard';
 import { ContractDraftPanel } from '@/components/ContractDraftPanel';
+import { useI18n } from '@/lib/i18n/provider';
 
 interface DealSummaryViewProps {
   summary?: PublicDealSummary;
@@ -21,11 +22,15 @@ interface DealSummaryViewProps {
 }
 
 export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, sellerSurplus, negotiationId, commitReceipt, onGoToDetail }: DealSummaryViewProps) {
+  const { t, formatYen, formatDateTime } = useI18n();
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const agreedPrice = summary?.agreedPrice ?? listing.price;
-  const fee = Math.round(agreedPrice * 0.05);
+  // The total is the amount the commit gate recorded (price plus shipping), so
+  // the summary shows exactly what the buyer approved. No fee is charged.
+  const total = commitReceipt?.amount ?? agreedPrice;
+  const shippingCost = total - agreedPrice;
 
   const submitFeedback = (event: FormEvent) => {
     event.preventDefault();
@@ -34,7 +39,13 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
   };
 
   const downloadReceipt = () => {
-    const receipt = [`BARGAIN 取引確認`, `商品: ${listing.title}`, `合意価格: ¥${agreedPrice.toLocaleString()}`, `取引ID: ${listing.id}`, `日時: ${summary?.completedAt ?? new Date().toISOString()}`].join('\n');
+    const receipt = [
+      t('deal.receiptFileTitle'),
+      t('deal.receiptLineProduct', { title: listing.title }),
+      t('deal.receiptLinePrice', { price: formatYen(agreedPrice) }),
+      t('deal.receiptLineId', { id: listing.id }),
+      t('deal.receiptLineDate', { date: formatDateTime(summary?.completedAt ?? new Date().toISOString()) }),
+    ].join('\n');
     const url = URL.createObjectURL(new Blob([receipt], { type: 'text/plain;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -42,6 +53,8 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
     anchor.click();
     URL.revokeObjectURL(url);
   };
+
+  const executorLabel = commitReceipt?.executor === 'webhook' ? t('deal.executorWebhook') : t('deal.executorSandbox');
 
   return (
     <div className="deal-summary-page page-container py-8 sm:py-10">
@@ -54,20 +67,20 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
         <div className="deal-summary-hero__header">
           <div className="deal-summary-hero__mark"><CheckCircle2 className="h-7 w-7" aria-hidden="true" /></div>
           <div>
-            <p className="eyebrow">DEAL COMPLETE</p>
-            <h1 id="deal-summary-title">交渉が成立しました</h1>
-            <p>合意内容と交渉の全イベントを記録しました。</p>
+            <p className="eyebrow">{t('deal.eyebrow')}</p>
+            <h1 id="deal-summary-title">{t('deal.title')}</h1>
+            <p>{t('deal.body')}</p>
           </div>
           <div className="deal-summary-hero__price-wrap">
-            <span>合意価格</span>
-            <strong>¥{agreedPrice.toLocaleString()}</strong>
+            <span>{t('deal.agreedPrice')}</span>
+            <strong>{formatYen(agreedPrice)}</strong>
           </div>
         </div>
         <div className="deal-summary-hero__metrics">
-          <SummaryMetric tone="yellow" label="買い手の節約" value={`¥${(summary?.buyerSaved ?? 0).toLocaleString()}`} hint={`${summary?.buyerSavedPercent ?? 0}% OFF`} />
-          <SummaryMetric tone="mint" label="売り手の余剰" value={sellerSurplus === undefined ? '非公開' : `+¥${sellerSurplus.toLocaleString()}`} hint={sellerSurplus === undefined ? '当事者のみ表示' : '最低価格との差'} />
-          <SummaryMetric tone="surface" label="アクション" value={`${summary?.totalActions ?? offers.length}回`} hint="全イベント" />
-          <SummaryMetric tone="rose" label="購入確定の承認" value={commitReceipt ? (commitReceipt.authorizationMode === 'human' ? '人間が署名' : 'ポリシー') : '—'} hint={commitReceipt ? `Commit Gate · ${commitReceipt.intentHash.slice(0, 10)}…` : '確定前'} />
+          <SummaryMetric tone="yellow" label={t('dashboard.buyerSavings')} value={formatYen(summary?.buyerSaved ?? 0)} hint={`${summary?.buyerSavedPercent ?? 0}% OFF`} />
+          <SummaryMetric tone="mint" label={t('deal.sellerSurplus')} value={sellerSurplus === undefined ? t('common.private') : `+${formatYen(sellerSurplus)}`} hint={sellerSurplus === undefined ? t('common.privateHint') : t('deal.sellerSurplusHint')} />
+          <SummaryMetric tone="surface" label={t('dashboard.actions')} value={t('dashboard.count', { count: summary?.totalActions ?? offers.length })} hint={t('deal.allEvents')} />
+          <SummaryMetric tone="rose" label={t('deal.commitApproval')} value={commitReceipt ? (commitReceipt.authorizationMode === 'human' ? t('deal.signedByHuman') : t('deal.byPolicy')) : t('common.none')} hint={commitReceipt ? `Commit Gate · ${commitReceipt.intentHash.slice(0, 10)}…` : t('deal.beforeCommit')} />
         </div>
       </motion.section>
 
@@ -76,11 +89,11 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
           <section className="deal-summary-panel deal-summary-order" aria-labelledby="order-summary-title">
             <div className="deal-summary-panel__heading">
               <div>
-                <p className="eyebrow">ORDER SUMMARY</p>
-                <h2 id="order-summary-title">商品・注文サマリー</h2>
+                <p className="eyebrow">{t('deal.orderEyebrow')}</p>
+                <h2 id="order-summary-title">{t('deal.orderTitle')}</h2>
               </div>
-              <AriaButton aria-label="領収書をダウンロード" onPress={downloadReceipt} className="deal-summary-button deal-summary-button--secondary">
-                <Download className="h-4 w-4" aria-hidden="true" />領収書
+              <AriaButton aria-label={t('deal.receiptAria')} onPress={downloadReceipt} className="deal-summary-button deal-summary-button--secondary">
+                <Download className="h-4 w-4" aria-hidden="true" />{t('deal.receipt')}
               </AriaButton>
             </div>
 
@@ -90,32 +103,31 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
               </div>
               <div className="min-w-0">
                 <h3>{listing.title}</h3>
-                <p>出品者: {listing.sellerName}</p>
+                <p>{t('deal.seller', { name: listing.sellerName })}</p>
               </div>
             </div>
 
             <div className="deal-summary-lines">
-              <Line label="商品価格" value={`¥${agreedPrice.toLocaleString()}`} />
-              {buyerMaxPrice && <Line label="設定した上限" value={`¥${buyerMaxPrice.toLocaleString()}`} />}
-              <Line label="手数料（5%）" value={`¥${fee.toLocaleString()}`} />
-              <Line label="送料" value="送料込み" />
-              <Line label="お支払い合計" value={`¥${(agreedPrice + fee).toLocaleString()}`} strong />
+              <Line label={t('deal.itemPrice')} value={formatYen(agreedPrice)} />
+              {buyerMaxPrice && <Line label={t('deal.yourMax')} value={formatYen(buyerMaxPrice)} />}
+              <Line label={t('deal.shipping')} value={shippingCost > 0 ? formatYen(shippingCost) : t('deal.shippingIncluded')} />
+              <Line label={t('deal.total')} value={formatYen(total)} strong />
             </div>
-            <p className="deal-summary-note">購入確定はCommit Gateで1回だけ実行されました（実行先: {commitReceipt?.executor === 'webhook' ? '注文システムWebhook' : 'サンドボックス台帳'}）。実決済は行いません。</p>
+            <p className="deal-summary-note">{t('deal.commitNote', { executor: executorLabel })}</p>
           </section>
 
           <section className="deal-summary-panel deal-summary-history" aria-labelledby="audit-trail-title">
             <div className="deal-summary-panel__heading deal-summary-panel__heading--history">
               <div>
-                <p className="eyebrow">AUDIT TRAIL</p>
-                <h2 id="audit-trail-title">実際の交渉履歴</h2>
+                <p className="eyebrow">{t('deal.auditEyebrow')}</p>
+                <h2 id="audit-trail-title">{t('deal.auditTitle')}</h2>
               </div>
-              <span className="deal-summary-count">{offers.length}イベント</span>
+              <span className="deal-summary-count">{t('deal.eventCount', { count: offers.length })}</span>
             </div>
 
             <div className="deal-summary-events">
               {offers.length === 0 ? (
-                <p className="deal-summary-empty">交渉履歴はありません。</p>
+                <p className="deal-summary-empty">{t('deal.noHistory')}</p>
               ) : offers.map((offer, index) => <NegotiationEventCard key={offer.id} offer={offer} listing={listing} index={index} />)}
             </div>
           </section>
@@ -125,22 +137,22 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
           <section className="deal-summary-panel deal-summary-steps" aria-labelledby="next-steps-title">
             <div className="deal-summary-panel__heading">
               <div>
-                <p className="eyebrow">HANDOFF</p>
-                <h2 id="next-steps-title">次のステップ</h2>
+                <p className="eyebrow">{t('deal.handoffEyebrow')}</p>
+                <h2 id="next-steps-title">{t('deal.nextSteps')}</h2>
               </div>
-              <span className="deal-summary-status">成立</span>
+              <span className="deal-summary-status">{t('deal.agreed')}</span>
             </div>
             <div className="deal-summary-steps__list">
-              <Step icon={PackageCheck} title="購入確認" body="合意内容を確認しました" done />
-              <Step icon={Truck} title="発送待ち" body="出品者の発送を待ちます" />
-              <Step icon={ShieldCheck} title="受取確認" body="商品を確認して評価します" />
+              <Step icon={PackageCheck} title={t('deal.step1Title')} body={t('deal.step1Body')} done />
+              <Step icon={Truck} title={t('deal.step2Title')} body={t('deal.step2Body')} />
+              <Step icon={ShieldCheck} title={t('deal.step3Title')} body={t('deal.step3Body')} />
             </div>
             <div className="deal-summary-actions">
               <AriaButton onPress={onGoToDetail} className="deal-summary-button deal-summary-button--primary">
-                <ExternalLink className="h-4 w-4" aria-hidden="true" />交渉履歴を詳しく見る
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />{t('deal.viewHistory')}
               </AriaButton>
               <AriaButton onPress={downloadReceipt} className="deal-summary-button deal-summary-button--secondary">
-                <Download className="h-4 w-4" aria-hidden="true" />取引確認を保存
+                <Download className="h-4 w-4" aria-hidden="true" />{t('deal.saveReceipt')}
               </AriaButton>
             </div>
           </section>
@@ -148,28 +160,28 @@ export function DealSummaryView({ summary, listing, offers = [], buyerMaxPrice, 
           <section className="deal-summary-panel deal-summary-rating" aria-labelledby="rating-title">
             <div className="deal-summary-panel__heading">
               <div>
-                <p className="eyebrow">FEEDBACK</p>
-                <h2 id="rating-title">AI交渉を評価</h2>
+                <p className="eyebrow">{t('deal.feedbackEyebrow')}</p>
+                <h2 id="rating-title">{t('deal.ratingTitle')}</h2>
               </div>
               <Star className="h-5 w-5" aria-hidden="true" />
             </div>
             {submitted ? (
-              <p className="deal-summary-rating__success" aria-live="polite">評価を受け付けました。ありがとうございます。</p>
+              <p className="deal-summary-rating__success" aria-live="polite">{t('deal.ratingThanks')}</p>
             ) : (
               <form onSubmit={submitFeedback} className="deal-summary-rating__form">
-                <div className="deal-summary-rating__stars" aria-label="評価">
-                  <span className="sr-only">1〜5つ星で評価</span>
+                <div className="deal-summary-rating__stars" aria-label={t('deal.ratingAria')}>
+                  <span className="sr-only">{t('deal.ratingHint')}</span>
                   {[1, 2, 3, 4, 5].map((value) => (
-                    <AriaButton key={value} type="button" aria-label={`${value}つ星`} onPress={() => setRating(value)} className={`deal-summary-rating__star ${value <= rating ? 'is-selected' : ''}`}>
+                    <AriaButton key={value} type="button" aria-label={t('deal.starAria', { count: value })} onPress={() => setRating(value)} className={`deal-summary-rating__star ${value <= rating ? 'is-selected' : ''}`}>
                       <Star className="h-5 w-5" aria-hidden="true" />
                     </AriaButton>
                   ))}
                 </div>
                 <label className="deal-summary-rating__field">
-                  <span className="sr-only">感想</span>
-                  <textarea id="deal-feedback" name="feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} maxLength={500} placeholder="感想があれば教えてください" />
+                  <span className="sr-only">{t('deal.feedbackLabel')}</span>
+                  <textarea id="deal-feedback" name="feedback" value={feedback} onChange={(event) => setFeedback(event.target.value)} maxLength={500} placeholder={t('deal.feedbackPlaceholder')} />
                 </label>
-                <AriaButton type="submit" isDisabled={!rating} className="deal-summary-button deal-summary-button--primary w-full">評価を送信</AriaButton>
+                <AriaButton type="submit" isDisabled={!rating} className="deal-summary-button deal-summary-button--primary w-full">{t('deal.submitRating')}</AriaButton>
               </form>
             )}
           </section>

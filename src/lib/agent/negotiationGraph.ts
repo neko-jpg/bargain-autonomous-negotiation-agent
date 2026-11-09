@@ -11,6 +11,7 @@ import {
   NegotiationTerms,
   AgentAlternative,
   ActionProposal,
+  LocalizedMessage,
 } from '@/types/negotiation';
 import { MarketSimulator } from '@/lib/engine/marketSimulator';
 import { NegotiationGuardrails } from '@/lib/engine/guardrails';
@@ -21,7 +22,7 @@ import { beginPurchaseCommit } from '@/lib/negotiation/commit';
 import { scoreAgentAlternatives } from '@/lib/agent/strategyScorer';
 import { updateNegotiationMemory } from '@/lib/agent/memory';
 import { recordAgentRun } from '@/lib/analytics/analyticsStore';
-import { buildPublicOfferMessage } from '@/lib/negotiation/messages';
+import { buildPublicOfferMessage, buildPublicOfferMessageTemplate } from '@/lib/negotiation/messages';
 import { hashOffer } from '@/lib/negotiation/sessionStore';
 
 // LangGraph Annotation Definition
@@ -78,6 +79,12 @@ export const NegotiationGraphAnnotation = Annotation.Root({
   approvalReason: Annotation<string | undefined>({
     reducer: (curr, update) => update ?? curr,
   }),
+  guardrailCorrectionTemplates: Annotation<LocalizedMessage[] | undefined>({
+    reducer: (curr, update) => update ?? curr,
+  }),
+  approvalReasonTemplate: Annotation<LocalizedMessage | undefined>({
+    reducer: (curr, update) => update ?? curr,
+  }),
   isDeal: Annotation<boolean>({
     reducer: (curr, update) => (update !== undefined ? update : curr),
     default: () => false,
@@ -95,7 +102,7 @@ export const NegotiationGraphAnnotation = Annotation.Root({
  * 1. Observe Node: 環境と市場データ、相手の提示履歴を観測
  */
 const observeNode = async (state: typeof NegotiationGraphAnnotation.State) => {
-  const { session, currentRole } = state;
+  const { session } = state;
   const listing = session.listing;
 
   // 相手の提示履歴（サニタイズ済み）を抽出
@@ -111,7 +118,7 @@ const observeNode = async (state: typeof NegotiationGraphAnnotation.State) => {
  * 2. Assess Node: BATNA・受諾スコア・リスク評価
  */
 const assessNode = async (state: typeof NegotiationGraphAnnotation.State) => {
-  const { currentListing, currentRole, privateReservationPrice, visibleOffers, session } = state;
+  const { currentListing, currentRole, privateReservationPrice, visibleOffers } = state;
 
   const lastOffer = visibleOffers.length > 0 ? visibleOffers[visibleOffers.length - 1] : null;
   const referencePrice = lastOffer ? lastOffer.price : currentListing.price;
@@ -173,7 +180,8 @@ const planNode = async (state: typeof NegotiationGraphAnnotation.State) => {
     visibleOffers.at(-1)?.terms ?? (currentRole === 'buyer'
       ? session.buyerPrivateState.preferredTerms
       : session.sellerPrivateState.preferredTerms),
-    session.agentMemory
+    session.agentMemory,
+    session.locale
   );
 
   const policy = currentRole === 'buyer' ? session.buyerPolicy : session.sellerPolicy;
@@ -233,6 +241,13 @@ const planNode = async (state: typeof NegotiationGraphAnnotation.State) => {
       price: selectedPrice,
       terms: selectedTerms,
       publicMessage: buildPublicOfferMessage(
+        currentRole,
+        selectedAction,
+        selectedPrice,
+        selectedTerms,
+        selected?.waitHours ?? planResult.waitHours
+      ),
+      publicMessageTemplate: buildPublicOfferMessageTemplate(
         currentRole,
         selectedAction,
         selectedPrice,
@@ -309,8 +324,13 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
   let targetOfferId = plannedTargetOfferId;
   let targetOfferVersion = plannedTargetOfferVersion;
   let correctionReason = [sanitized.correctionReason, policyDecision.correctionReason].filter(Boolean).join(' ') || undefined;
+  let correctionTemplates: LocalizedMessage[] = [
+    ...(sanitized.correctionReasons ?? []),
+    ...(policyDecision.correctionReasons ?? []),
+  ];
   let requiresHumanApproval = policyDecision.requiresHumanApproval;
   let approvalReason = policyDecision.approvalReason;
+  let approvalReasonTemplate = policyDecision.approvalReasonTemplate;
 
   if (sanitized.sanitizedAction === 'accept_offer') {
     const target = lastOpponentOffer && (!plannedTargetOfferId || plannedTargetOfferId === lastOpponentOffer.id)
@@ -320,6 +340,7 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
     if (!target) {
       finalAction = 'ask_user';
       correctionReason = [correctionReason, '受諾対象の相手オファーが見つからないため、送信を保留しました。'].filter(Boolean).join(' ');
+      correctionTemplates = [...correctionTemplates, { key: 'reason.graph.targetOfferMissing' }];
       targetOfferId = undefined;
       targetOfferVersion = undefined;
     } else {
@@ -333,6 +354,7 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
         policyDecision = exactTarget;
         requiresHumanApproval = exactTarget.requiresHumanApproval;
         approvalReason = exactTarget.approvalReason;
+        approvalReasonTemplate = exactTarget.approvalReasonTemplate;
         targetOfferId = target.id;
         targetOfferVersion = target.version ?? 1;
         // Acceptance is not irreversible by itself: it only opens a pending
@@ -348,6 +370,8 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
         finalTerms = policyDecision.terms;
         requiresHumanApproval = policyDecision.requiresHumanApproval;
         approvalReason = policyDecision.approvalReason;
+        approvalReasonTemplate = policyDecision.approvalReasonTemplate;
+        correctionTemplates = [...correctionTemplates, { key: 'reason.graph.acceptMismatch' }];
         correctionReason = [correctionReason, '受諾条件が対象オファーと一致しないため、カウンターオファーへ変換しました。'].filter(Boolean).join(' ');
       }
     }
@@ -364,6 +388,7 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
         price: committedPrice,
         terms: committedTerms,
         publicMessage: buildPublicOfferMessage(currentRole, finalAction, committedPrice, committedTerms, sanitized.sanitizedWaitHours),
+        publicMessageTemplate: buildPublicOfferMessageTemplate(currentRole, finalAction, committedPrice, committedTerms, sanitized.sanitizedWaitHours),
         waitHours: sanitized.sanitizedWaitHours,
       }
     : undefined;
@@ -376,8 +401,10 @@ const guardrailNode = async (state: typeof NegotiationGraphAnnotation.State) => 
     plannedTargetOfferVersion: targetOfferVersion,
     plannedProposal: adjustedProposal,
     guardrailCorrection: correctionReason,
+    guardrailCorrectionTemplates: correctionTemplates.length > 0 ? correctionTemplates : undefined,
     requiresHumanApproval,
     approvalReason,
+    approvalReasonTemplate,
   };
 };
 
@@ -397,8 +424,10 @@ const actNode = async (state: typeof NegotiationGraphAnnotation.State) => {
     explanationMessage,
     plannedTerms,
     guardrailCorrection,
+    guardrailCorrectionTemplates,
     requiresHumanApproval,
     approvalReason,
+    approvalReasonTemplate,
     plannedAlternatives,
     plannedProposal,
   } = state;
@@ -437,14 +466,17 @@ const actNode = async (state: typeof NegotiationGraphAnnotation.State) => {
     reasoning: reasoningDetails,
     decision: {
       guardrailCorrection,
+      guardrailCorrectionTemplates,
       requiresHumanApproval,
       approvalReason,
+      approvalReasonTemplate,
       candidateCount: plannedAlternatives?.length,
       selectedCandidate: plannedAlternatives?.findIndex((candidate) => (candidate.action === action || (action === 'ask_user' && candidate.action === 'accept_offer')) && candidate.price === price),
     },
     alternatives: plannedAlternatives,
     waitTimeHours: proposal.waitHours,
     messageText: proposal.publicMessage,
+    messageTemplate: proposal.publicMessageTemplate,
   };
   newOffer.proposalHash = hashOffer(newOffer);
 

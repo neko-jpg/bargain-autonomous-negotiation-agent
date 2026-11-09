@@ -1,4 +1,12 @@
 import type { ApprovalGrant, AuthorizationRequirement, EffectReceipt, IrreversibleIntent } from '@/lib/safety/commitGate';
+import type { TranslationKey, TranslationParams } from '@/lib/i18n/dictionary';
+import type { Locale } from '@/lib/i18n/config';
+
+/** A message stored as a dictionary key so it renders in the viewer's locale. */
+export interface LocalizedMessage {
+  key: TranslationKey;
+  params?: TranslationParams;
+}
 
 export type UrgencyLevel = 'low' | 'medium' | 'high';
 
@@ -105,6 +113,10 @@ export type AgentActionType =
 
 export interface ActionReasoning {
   summary: string;
+  /** Structured form of `summary` for text the app generates itself. */
+  summaryTemplate?: LocalizedMessage;
+  /** Structured form of `factors`. */
+  factorTemplates?: LocalizedMessage[];
   marketMedian: number;
   daysListed: number;
   demandTrend: string;
@@ -116,8 +128,12 @@ export interface ActionReasoning {
 /** Public, explainable metadata that can be shown in the audit trail. */
 export interface NegotiationDecisionMetadata {
   guardrailCorrection?: string;
+  /** Structured form of `guardrailCorrection`, when it has a single source. */
+  guardrailCorrectionTemplates?: LocalizedMessage[];
   requiresHumanApproval?: boolean;
   approvalReason?: string;
+  /** Structured form of `approvalReason`. */
+  approvalReasonTemplate?: LocalizedMessage;
   candidateCount?: number;
   selectedCandidate?: number;
 }
@@ -149,6 +165,8 @@ export interface ActionProposal {
   price: number;
   terms: NegotiationTerms;
   publicMessage: string;
+  /** Structured form of `publicMessage`, so the UI can re-render it in any locale. */
+  publicMessageTemplate?: LocalizedMessage;
   internalRationale: string;
   waitHours?: number;
   source: 'llm' | 'heuristic';
@@ -177,6 +195,8 @@ export interface NegotiationOffer {
   timestamp: string;
   senderRole: 'buyer_agent' | 'seller_agent' | 'buyer_human' | 'seller_human';
   senderName: string;
+  /** Present when `senderName` is a synthetic label the app can translate. */
+  senderKey?: TranslationKey;
   price: number;
   terms?: NegotiationTerms;
   actionType: AgentActionType;
@@ -184,7 +204,10 @@ export interface NegotiationOffer {
   decision?: NegotiationDecisionMetadata;
   alternatives?: AgentAlternative[];
   waitTimeHours?: number;
+  /** Rendered text, kept for API clients and records written before i18n. */
   messageText: string;
+  /** Structured form of `messageText`; preferred by the UI. */
+  messageTemplate?: LocalizedMessage;
 }
 
 export type NegotiationStatus =
@@ -224,7 +247,8 @@ export interface PendingCommit {
 export interface RejectedCommit {
   intentHash: string;
   amount: number;
-  reason: 'rejected' | 'expired';
+  /** `voided`: an operator confirmed an ambiguous attempt never took effect. */
+  reason: 'rejected' | 'expired' | 'voided';
   by?: string;
   at: string;
 }
@@ -257,11 +281,13 @@ export type CounterpartyPublicOffer = Pick<
   | 'timestamp'
   | 'senderRole'
   | 'senderName'
+  | 'senderKey'
   | 'price'
   | 'terms'
   | 'actionType'
   | 'waitTimeHours'
   | 'messageText'
+  | 'messageTemplate'
 >;
 
 export type NegotiationOfferView = CounterpartyPublicOffer & Pick<
@@ -294,6 +320,8 @@ export interface NegotiationSession {
   rejectedCommits?: RejectedCommit[];
   /** Scripted, in-memory demo session. Never persisted, never reaches the gate. */
   scriptedDemo?: boolean;
+  /** Language the negotiation is conducted in; drives generated agent text. */
+  locale?: Locale;
   createdAt: string;
   updatedAt: string;
 }
@@ -423,6 +451,10 @@ export interface ContractClause {
   id: string;
   title: string;
   body: string;
+  /** Dictionary keys for the rendered strings, so the UI can re-localise. */
+  titleKey?: TranslationKey;
+  bodyKey?: TranslationKey;
+  params?: TranslationParams;
 }
 
 export interface ContractDraft {
@@ -446,7 +478,7 @@ export interface ContractDraft {
 export interface AgentRunRecord {
   id: string;
   negotiationId: string;
-  provider: 'google' | 'openai' | 'opencode' | 'heuristic';
+  provider: 'google' | 'openai' | 'opencode' | 'deepseek' | 'heuristic';
   model?: string;
   latencyMs: number;
   fallback: boolean;

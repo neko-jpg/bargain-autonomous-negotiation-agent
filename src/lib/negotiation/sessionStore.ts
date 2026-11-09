@@ -10,6 +10,7 @@ import {
   PublicPendingCommit,
   SellerPolicy,
 } from '@/types/negotiation';
+import type { Locale } from '@/lib/i18n/config';
 import {
   DEFAULT_BUYER_POLICY_DEMO,
   DEFAULT_SELLER_POLICY_DEMO,
@@ -70,7 +71,7 @@ export function createNegotiationSession(
   listing: Listing,
   buyerPolicy?: BuyerPolicy,
   buyerTerms?: Partial<NegotiationTerms>,
-  owners?: { buyerId?: string; sellerId?: string }
+  owners?: { buyerId?: string; sellerId?: string; locale?: Locale }
 ): NegotiationSession {
   const now = new Date().toISOString();
   const isDemo = listing.id === DEMO_CATALOG_ID;
@@ -121,6 +122,7 @@ export function createNegotiationSession(
     version: 0,
     buyerId: owners?.buyerId ?? 'buyer-local',
     sellerId: owners?.sellerId ?? `seller:${listing.sellerName}`,
+    locale: owners?.locale,
     listing: clone({ ...listing, images: listing.images ?? [listing.imageUrl] }),
     buyerPolicy: { ...buyer },
     sellerPolicy: seller,
@@ -404,7 +406,7 @@ export function makeOffer(
   messageText: string,
   actionType: NegotiationOffer['actionType'] = 'counter_offer',
   terms?: NegotiationTerms,
-  options?: Pick<NegotiationOffer, 'targetOfferId' | 'targetOfferVersion'>
+  options?: Partial<Pick<NegotiationOffer, 'targetOfferId' | 'targetOfferVersion' | 'messageTemplate' | 'senderKey'>>
 ): NegotiationSession {
   const offer: NegotiationOffer = {
     id: `offer-${randomUUID()}`,
@@ -415,10 +417,12 @@ export function makeOffer(
     timestamp: new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }),
     senderRole,
     senderName,
+    senderKey: options?.senderKey,
     price,
     terms,
     actionType,
     messageText,
+    messageTemplate: options?.messageTemplate,
   };
   offer.proposalHash = hashOffer(offer);
   return {

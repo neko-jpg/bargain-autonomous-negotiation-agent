@@ -1,4 +1,6 @@
-import { DealSummary, Listing, NegotiationOffer, NegotiationSession } from '@/types/negotiation';
+import { DealSummary, Listing, LocalizedMessage, NegotiationOffer, NegotiationSession } from '@/types/negotiation';
+import { DEFAULT_LOCALE } from '@/lib/i18n/config';
+import { translate } from '@/lib/i18n/dictionary';
 import { DEMO_CATALOG_ID } from '@/lib/catalog/catalogAdapter';
 import { DEFAULT_BUYER_POLICY_DEMO, DEFAULT_SELLER_POLICY_DEMO } from '@/lib/mockData';
 import {
@@ -16,12 +18,14 @@ type SwitchScenarioStep = {
   action: 'make_offer' | 'counter_offer' | 'wait' | 'accept_offer';
   waitHours?: number;
   marketStateChange?: Partial<Listing>;
-  reasonSummary: string;
-  factors: string[];
-  message: string;
+  /** Structured text so the scripted demo follows the viewer's language. */
+  reason: LocalizedMessage;
+  factors: LocalizedMessage[];
+  message: LocalizedMessage;
 };
 
-const yen = (value: number) => `¥${Math.round(value).toLocaleString('ja-JP')}`;
+/** Rendered fallback for API clients that read the demo offers directly. */
+const renderStepText = (text: LocalizedMessage) => translate(DEFAULT_LOCALE, text.key, text.params);
 const roundToHundred = (value: number) => Math.round(value / 100) * 100;
 const demoListing = findListing(DEMO_CATALOG_ID);
 
@@ -44,18 +48,26 @@ export const SWITCH_SCENARIO_STEPS: readonly SwitchScenarioStep[] = [
     name: 'BARGAIN Buyer Agent',
     price: firstOffer,
     action: 'make_offer',
-    reasonSummary: '商品相場と出品経過日数を分析し、目標価格に近い初回提示を行います。',
-    factors: [`出品価格 ${yen(demoPrice)} に対する初期打診`, `目標価格 ${yen(buyerTarget)} に近い`, `市場中央値 ${yen(demoListing.marketMedianPrice)} を参照`],
-    message: `状態を確認しました。${yen(firstOffer)}でお譲りいただけますか？`,
+    reason: { key: 'demo.step1.reason' },
+    factors: [
+      { key: 'demo.step1.factor1', params: { price: demoPrice } },
+      { key: 'demo.step1.factor2', params: { target: buyerTarget } },
+      { key: 'demo.step1.factor3', params: { median: demoListing.marketMedianPrice } },
+    ],
+    message: { key: 'demo.step1.message', params: { price: firstOffer } },
   },
   {
     role: 'seller_agent',
     name: `${demoListing.sellerName} (Seller Agent)`,
     price: sellerCounter,
     action: 'counter_offer',
-    reasonSummary: '商品の状態と市場価格を守りながら、販売成立に向けてカウンター提示します。',
-    factors: [`最低販売価格 ${yen(sellerMin)} を確保`, `出品価格からの譲歩 ${yen(demoPrice - sellerCounter)}`, '商品の状態・付属品情報を評価'],
-    message: `状態と相場を踏まえ、${yen(sellerCounter)}まででしたら対応可能です。`,
+    reason: { key: 'demo.step2.reason' },
+    factors: [
+      { key: 'demo.step2.factor1', params: { min: sellerMin } },
+      { key: 'demo.step2.factor2', params: { delta: demoPrice - sellerCounter } },
+      { key: 'demo.step2.factor3' },
+    ],
+    message: { key: 'demo.step2.message', params: { price: sellerCounter } },
   },
   {
     role: 'buyer_agent',
@@ -64,36 +76,52 @@ export const SWITCH_SCENARIO_STEPS: readonly SwitchScenarioStep[] = [
     action: 'wait',
     waitHours: 24,
     marketStateChange: { daysListed: demoListing.daysListed + 8, recentDemand: 'low', viewsCount: demoListing.viewsCount + 72 },
-    reasonSummary: '需要の変化を観測し、上限価格を温存しながら売り手の再評価を待ちます。',
-    factors: ['24時間の市場観測', '需要トレンドが落ち着いた', `上限価格 ${yen(buyerMax)} を温存`],
-    message: '市場の変化を確認するため、24時間待機して再評価します。',
+    reason: { key: 'demo.step3.reason' },
+    factors: [
+      { key: 'demo.step3.factor1' },
+      { key: 'demo.step3.factor2' },
+      { key: 'demo.step3.factor3', params: { max: buyerMax } },
+    ],
+    message: { key: 'demo.step3.message' },
   },
   {
     role: 'seller_agent',
     name: `${demoListing.sellerName} (Seller Agent)`,
     price: sellerReoffer,
     action: 'counter_offer',
-    reasonSummary: '出品期間の長期化と需要低下を検知し、自発的に条件を見直します。',
-    factors: [`最低価格 ${yen(sellerMin)} より ${yen(sellerReoffer - sellerMin)} 上`, '需要低下を検知', '購入意思を維持するための再提示'],
-    message: `お待たせしました。条件を見直し、${yen(sellerReoffer)}までお下げします。`,
+    reason: { key: 'demo.step4.reason' },
+    factors: [
+      { key: 'demo.step4.factor1', params: { min: sellerMin, delta: sellerReoffer - sellerMin } },
+      { key: 'demo.step4.factor2' },
+      { key: 'demo.step4.factor3' },
+    ],
+    message: { key: 'demo.step4.message', params: { price: sellerReoffer } },
   },
   {
     role: 'buyer_agent',
     name: 'BARGAIN Buyer Agent',
     price: finalOffer,
     action: 'counter_offer',
-    reasonSummary: '売り手の譲歩を受け、上限未満で成立するクロージング価格を提示します。',
-    factors: [`上限価格 ${yen(buyerMax)} 未満`, `売り手最低価格 ${yen(sellerMin)} 超`, '即時決済条件を提示'],
-    message: `ご配慮ありがとうございます。${yen(finalOffer)}でしたら今すぐ決済します。`,
+    reason: { key: 'demo.step5.reason' },
+    factors: [
+      { key: 'demo.step5.factor1', params: { max: buyerMax } },
+      { key: 'demo.step5.factor2', params: { min: sellerMin } },
+      { key: 'demo.step5.factor3' },
+    ],
+    message: { key: 'demo.step5.message', params: { price: finalOffer } },
   },
   {
     role: 'seller_agent',
     name: `${demoListing.sellerName} (Seller Agent)`,
     price: finalOffer,
     action: 'accept_offer',
-    reasonSummary: '提示価格が最低許容価格を上回り、双方の条件がガードレール内で一致しました。',
-    factors: [`最低販売価格 ${yen(sellerMin)} をクリア`, `売り手余剰 ${yen(finalOffer - sellerMin)}`, '安全な取引条件を確認'],
-    message: `ありがとうございます。${yen(finalOffer)}でお取引させていただきます。`,
+    reason: { key: 'demo.step6.reason' },
+    factors: [
+      { key: 'demo.step6.factor1', params: { min: sellerMin } },
+      { key: 'demo.step6.factor2', params: { surplus: finalOffer - sellerMin } },
+      { key: 'demo.step6.factor3' },
+    ],
+    message: { key: 'demo.step6.message', params: { price: finalOffer } },
   },
 ];
 
@@ -126,14 +154,17 @@ export function advanceSwitchDemo(sessionId: string, stepIndex: number) {
       actionType: step.action,
       waitTimeHours: step.waitHours,
       reasoning: {
-        summary: step.reasonSummary,
+        summary: renderStepText(step.reason),
+        summaryTemplate: step.reason,
         marketMedian: listing.marketMedianPrice,
         daysListed: listing.daysListed,
         demandTrend: listing.recentDemand,
         acceptanceScore: step.action === 'accept_offer' ? 100 : Math.min(96, 60 + index * 6),
-        factors: [...step.factors],
+        factors: step.factors.map(renderStepText),
+        factorTemplates: step.factors.map((factor) => ({ ...factor })),
       },
-      messageText: step.message,
+      messageText: renderStepText(step.message),
+      messageTemplate: step.message,
     });
   }
 

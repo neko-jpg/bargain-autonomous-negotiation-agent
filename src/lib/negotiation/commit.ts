@@ -4,11 +4,13 @@ import {
   EffectAuthorization,
   EffectExecutor,
   EffectLedger,
+  EffectResolution,
   GateDependencies,
   hashIntent,
   IrreversibleIntent,
   issueApprovalGrant,
   LedgerEntry,
+  LedgerStatus,
   MemoryEffectLedger,
   RequiredApprover,
   SafetyError,
@@ -171,6 +173,7 @@ function toEntry(row: Record<string, unknown>): LedgerEntry {
     createdAt: date(row.created_at) ?? new Date().toISOString(),
     reservedAt: date(row.reserved_at) ?? new Date().toISOString(),
     executedAt: date(row.executed_at),
+    resolution: row.resolution ? rowJson<EffectResolution>(row.resolution) : undefined,
   };
 }
 
@@ -217,6 +220,18 @@ export class PostgresEffectLedger implements EffectLedger {
       "update effect_outbox set status = 'failed', error = $2 where intent_hash = $1 and status = 'reserved'",
       [intentHash, error.slice(0, 500)]
     );
+  }
+
+  async resolve(intentHash: string, from: LedgerStatus, resolution: EffectResolution, externalRef?: string) {
+    const executed = resolution.outcome === 'executed';
+    const result = await this.database().query(
+      `update effect_outbox set status = $3, resolution = $4,
+         external_ref = case when $3 = 'executed' then coalesce($5, external_ref) else external_ref end,
+         executed_at = case when $3 = 'executed' then $6 else executed_at end
+       where intent_hash = $1 and status = $2 returning *`,
+      [intentHash, from, executed ? 'executed' : 'voided', JSON.stringify(resolution), externalRef ?? null, new Date(resolution.resolvedAt)]
+    );
+    return result.rows[0] ? toEntry(result.rows[0]) : undefined;
   }
 
   async list(subjectId?: string) {

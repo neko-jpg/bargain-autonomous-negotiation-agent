@@ -1,27 +1,57 @@
-import { AgentActionType, NegotiationTerms } from '@/types/negotiation';
+import { AgentActionType, LocalizedMessage, NegotiationTerms } from '@/types/negotiation';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n/config';
+import { translate } from '@/lib/i18n/dictionary';
 
 /**
  * Public text is generated from the same proposal object that is executed.
  * This keeps a selected price, terms and message from drifting apart.
+ *
+ * Messages are stored as a dictionary key plus parameters, so the UI can render
+ * the same offer in Japanese or English without regenerating the negotiation.
  */
-export function buildPublicOfferMessage(
+export function buildPublicOfferMessageTemplate(
   role: 'buyer' | 'seller',
   action: AgentActionType,
   price: number,
   terms: NegotiationTerms,
   waitHours?: number
-) {
-  const yen = `¥${price.toLocaleString('ja-JP')}`;
+): LocalizedMessage {
   if (action === 'accept_offer') {
-    return role === 'buyer'
-      ? `提示いただいた${yen}で購入させていただきます。よろしくお願いいたします。`
-      : `${yen}でのお取引を承諾いたしました。ご購入手続きをお願いいたします。`;
+    return {
+      key: role === 'buyer' ? 'offer.message.acceptBuyer' : 'offer.message.acceptSeller',
+      params: { price },
+    };
   }
-  if (action === 'reject_offer') return '今回は条件が合わないため、見送らせていただきます。';
-  if (action === 'wait') return `条件を確認するため、${waitHours ?? 6}時間ほど待機して再評価します。`;
-  if (action === 'ask_user') return `${yen}の条件について、最終確認をお願いします。`;
-  const termsText = terms.shippingCost > 0 ? `送料${terms.shippingCost.toLocaleString('ja-JP')}円を含む条件` : '提示条件';
-  return role === 'buyer'
-    ? `${termsText}で${yen}ではいかがでしょうか。`
-    : `${termsText}で${yen}まででしたら対応可能です。`;
+  if (action === 'reject_offer') {
+    return { key: 'offer.message.reject' };
+  }
+  if (action === 'wait') {
+    return { key: 'offer.message.wait', params: { hours: waitHours ?? 6 } };
+  }
+  if (action === 'ask_user') {
+    return { key: 'offer.message.askUser', params: { price } };
+  }
+  if (terms.shippingCost > 0) {
+    return {
+      key: role === 'buyer' ? 'offer.message.offerBuyerWithShipping' : 'offer.message.offerSellerWithShipping',
+      params: { price, shipping: terms.shippingCost },
+    };
+  }
+  return {
+    key: role === 'buyer' ? 'offer.message.offerBuyer' : 'offer.message.offerSeller',
+    params: { price },
+  };
+}
+
+/** Rendered form of the public message, used for API clients and stored offers. */
+export function buildPublicOfferMessage(
+  role: 'buyer' | 'seller',
+  action: AgentActionType,
+  price: number,
+  terms: NegotiationTerms,
+  waitHours?: number,
+  locale: Locale = DEFAULT_LOCALE
+) {
+  const template = buildPublicOfferMessageTemplate(role, action, price, terms, waitHours);
+  return translate(locale, template.key, template.params);
 }

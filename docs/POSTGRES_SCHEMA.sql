@@ -156,13 +156,18 @@ create table if not exists effect_outbox (
   payload jsonb not null,
   authorization_record jsonb not null,
   executor text not null,
-  status text not null check (status in ('reserved', 'executed', 'failed')),
+  status text not null check (status in ('reserved', 'executed', 'failed', 'voided')),
   external_ref text,
   error text,
   created_at timestamptz not null default now(),
   reserved_at timestamptz not null,
-  executed_at timestamptz
+  executed_at timestamptz,
+  resolution jsonb
 );
+-- Upgrade path for databases created before human reconciliation existed.
+alter table effect_outbox add column if not exists resolution jsonb;
+alter table effect_outbox drop constraint if exists effect_outbox_status_check;
+alter table effect_outbox add constraint effect_outbox_status_check check (status in ('reserved', 'executed', 'failed', 'voided'));
 
 -- Operator safety controls (kill switch).
 create table if not exists safety_controls (
@@ -175,7 +180,7 @@ create table if not exists safety_controls (
 create table if not exists negotiation_agent_runs (
   id text primary key,
   negotiation_id text not null references negotiations(id) on delete cascade,
-  provider text not null check (provider in ('google', 'openai', 'heuristic')),
+  provider text not null check (provider in ('google', 'openai', 'opencode', 'deepseek', 'heuristic')),
   model text,
   latency_ms integer not null check (latency_ms >= 0),
   fallback boolean not null default false,
@@ -184,6 +189,11 @@ create table if not exists negotiation_agent_runs (
   guardrail_corrections integer not null default 0 check (guardrail_corrections >= 0),
   created_at timestamptz not null default now()
 );
+
+-- Agent run telemetry: the original check refused the OpenCode and DeepSeek
+-- providers, so their rows were rejected on insert (recordAgentRun logs a warning).
+alter table negotiation_agent_runs drop constraint if exists negotiation_agent_runs_provider_check;
+alter table negotiation_agent_runs add constraint negotiation_agent_runs_provider_check check (provider in ('google', 'openai', 'opencode', 'deepseek', 'heuristic'));
 
 alter table negotiations add column if not exists agent_memory jsonb;
 alter table negotiation_policies alter column buyer_policy drop not null;

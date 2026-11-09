@@ -2,9 +2,9 @@
  * Provider probe.
  *
  * Answers one question before anything else runs: which base URL and which
- * model id actually work with the key in `.env.local`?
+ * model id actually work with the keys in `.env.local`?
  *
- * It never prints the key. It prints HTTP status, the first few model ids and,
+ * It never prints a key. It prints HTTP status, the first few model ids and,
  * with `--smoke`, a one-token chat completion.
  *
  *   npm run provider:check
@@ -17,6 +17,9 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
 const smoke = process.argv.includes('--smoke');
 
+const DEEPSEEK_DEFAULT_BASE = 'https://api.deepseek.com';
+const DEEPSEEK_DEFAULT_MODEL = 'deepseek-flash';
+
 function usable(value: string | undefined): value is string {
   if (!value) return false;
   const normalized = value.trim().replace(/^['"]|['"]$/g, '');
@@ -25,18 +28,20 @@ function usable(value: string | undefined): value is string {
 
 const preference = (process.env.BARGAIN_LLM_PROVIDER ?? 'auto').trim().toLowerCase();
 
+// The OpenCode key is sent only to the host the user configured. Without this
+// filter the OpenCode guesses below would send that key to opencode.ai, which
+// is wrong for a key from another vendor. The DeepSeek key is never sent here:
+// it goes only to DEEPSEEK_BASE_URL (default https://api.deepseek.com).
+const configuredBase = process.env.OPENCODE_BASE_URL?.trim();
+const configuredOrigin = configuredBase ? new URL(configuredBase).origin : undefined;
 const OPENCODE_CANDIDATES = [
-  process.env.OPENCODE_BASE_URL?.trim(),
+  configuredBase,
   'https://opencode.ai/inference/openai/v1',
   'https://opencode.ai/inference/go',
   'https://opencode.ai/inference/v1',
-].filter((value): value is string => Boolean(value));
-
-interface Probe {
-  label: string;
-  url: string;
-  headers: Record<string, string>;
-}
+]
+  .filter((value): value is string => Boolean(value))
+  .filter((url) => !configuredOrigin || new URL(url).origin === configuredOrigin);
 
 async function tryJson(url: string, headers: Record<string, string>) {
   try {
@@ -59,10 +64,38 @@ function modelIds(parsed: unknown): string[] {
   return list.map((item) => item.id ?? item.name ?? '').filter(Boolean);
 }
 
+/**
+ * One-token chat completion against an OpenAI-compatible base URL. max_tokens is
+ * generous on purpose: reasoning models spend the budget on thinking first, so a
+ * small cap returns empty content and looks like a failure.
+ */
+async function smokeChat(base: string, key: string, model: string) {
+  const started = Date.now();
+  try {
+    const response = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+        max_tokens: 64,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await response.text();
+    const elapsed = Date.now() - started;
+    console.log(`\n  smoke POST ${base}/chat/completions · model ${model} · ${response.status} in ${elapsed} ms`);
+    console.log(`  response: ${body.slice(0, 220).replace(/\s+/g, ' ')}`);
+  } catch (error) {
+    console.log(`\n  smoke POST failed after ${Date.now() - started} ms: ${(error as Error).message}`);
+  }
+}
+
 async function main() {
   console.log('\n--- 🔌 Provider probe ---');
 
   const opencodeKey = process.env.OPENCODE_API_KEY;
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   const googleKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
 
@@ -85,32 +118,26 @@ async function main() {
     if (smoke) {
       const base = (process.env.OPENCODE_BASE_URL?.trim() || 'https://opencode.ai/inference/v1').replace(/\/$/, '');
       const model = process.env.BARGAIN_OPENCODE_MODEL?.trim() ?? '';
-      if (!model) {
-        console.log('\n  smoke: set BARGAIN_OPENCODE_MODEL first');
-      } else {
-        const started = Date.now();
-        try {
-          const response = await fetch(`${base}/chat/completions`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${opencodeKey}`, 'content-type': 'application/json' },
-            body: JSON.stringify({
-              model,
-              messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
-              max_tokens: 8,
-            }),
-            signal: AbortSignal.timeout(30_000),
-          });
-          const body = await response.text();
-          const elapsed = Date.now() - started;
-          console.log(`\n  smoke POST ${base}/chat/completions · model ${model} · ${response.status} in ${elapsed} ms`);
-          console.log(`  response: ${body.slice(0, 220).replace(/\s+/g, ' ')}`);
-        } catch (error) {
-          console.log(`\n  smoke POST failed after ${Date.now() - started} ms: ${(error as Error).message}`);
-        }
-      }
+      if (model) await smokeChat(base, opencodeKey, model);
+      else console.log('\n  smoke: set BARGAIN_OPENCODE_MODEL first');
     }
   } else if (wants('opencode')) {
     console.log('\nOpenCode: no key. Put OPENCODE_API_KEY=... in .env.local');
+  }
+
+  if (wants('deepseek') && usable(deepseekKey)) {
+    const base = (process.env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE).replace(/\/$/, '');
+    const result = await tryJson(`${base}/models`, { Authorization: `Bearer ${deepseekKey}` });
+    const ids = modelIds(result.parsed).slice(0, 12);
+    console.log(`\nDeepSeek: ${result.status || 'ERR'}  ${base}`);
+    if (ids.length) console.log(`  models: ${ids.join(', ')}`);
+    else if (result.status >= 400) console.log(`  ${result.text.slice(0, 120)}`);
+    const configuredModel = process.env.BARGAIN_DEEPSEEK_MODEL?.trim();
+    const model = configuredModel || DEEPSEEK_DEFAULT_MODEL;
+    console.log(`  BARGAIN_DEEPSEEK_MODEL=${model}${configuredModel ? '' : ' (default)'}`);
+    if (smoke) await smokeChat(base, deepseekKey, model);
+  } else if (wants('deepseek')) {
+    console.log('\nDeepSeek: no key. Put DEEPSEEK_API_KEY=... in .env.local');
   }
 
   if (wants('openai') && usable(openaiKey)) {

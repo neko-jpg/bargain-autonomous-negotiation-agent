@@ -1,4 +1,6 @@
-import { AgentActionType, NegotiationOffer } from '@/types/negotiation';
+import { AgentActionType, LocalizedMessage, NegotiationOffer } from '@/types/negotiation';
+import { DEFAULT_LOCALE } from '@/lib/i18n/config';
+import { translate } from '@/lib/i18n/dictionary';
 
 export interface GuardrailValidationResult {
   isValid: boolean;
@@ -6,6 +8,8 @@ export interface GuardrailValidationResult {
   sanitizedPrice: number;
   sanitizedWaitHours?: number;
   correctionReason?: string;
+  /** Structured form of `correctionReason`, so the UI can re-render it. */
+  correctionReasons?: LocalizedMessage[];
   rejectionReason?: string;
 }
 
@@ -27,13 +31,18 @@ export class NegotiationGuardrails {
     let sanitizedPrice = Number.isFinite(plannedPrice) ? Math.round(plannedPrice) : Math.round(targetPrice);
     let sanitizedWaitHours = plannedWaitHours;
     let correctionReason: string | undefined;
+    let correctionReasons: LocalizedMessage[] | undefined;
 
-    const addCorrection = (reason: string) => {
+    const addCorrection = (template: LocalizedMessage) => {
+      // The rendered text is kept for API clients and stored records; the
+      // template lets the same correction render in the viewer's language.
+      const reason = translate(DEFAULT_LOCALE, template.key, template.params);
       correctionReason = correctionReason ? `${correctionReason} ${reason}` : reason;
+      correctionReasons = [...(correctionReasons ?? []), template];
     };
 
     if (!Number.isFinite(plannedPrice)) {
-      addCorrection('提示額が不正なため、目標価格を基準に補正しました。');
+      addCorrection({ key: 'reason.guardrail.invalidOffer' });
     }
 
     const lastOpponentOffer = [...history]
@@ -48,32 +57,32 @@ export class NegotiationGuardrails {
       // 1. 買い手の上限価格（maxPrice）の超過防止
       if (sanitizedPrice > reservationPrice) {
         sanitizedPrice = reservationPrice;
-        addCorrection(`上限価格(¥${reservationPrice.toLocaleString()})を超えたため上限額に補正しました。`);
+        addCorrection({ key: 'reason.guardrail.aboveMax', params: { price: reservationPrice } });
       }
 
       // 2. 出品価格を超えた提示の防止
       if (sanitizedPrice > currentListingPrice) {
         sanitizedPrice = currentListingPrice;
-        addCorrection('出品価格を超えないように補正しました。');
+        addCorrection({ key: 'reason.guardrail.aboveListing' });
       }
 
       // 買い手自身の過去提示額より下がる逆行提示の防止
       if (lastOwnOffer && sanitizedPrice < lastOwnOffer.price && (sanitizedAction === 'make_offer' || sanitizedAction === 'counter_offer')) {
         sanitizedPrice = lastOwnOffer.price;
-        addCorrection(`前回の自己提示額(¥${lastOwnOffer.price.toLocaleString()})より低くならないよう補正しました。`);
+        addCorrection({ key: 'reason.guardrail.belowOwnOffer', params: { price: lastOwnOffer.price } });
       }
     } else {
       // 売り手側のガードレール
       // 1. 売り手の最低価格（minPrice）の下回り防止
       if (sanitizedPrice < reservationPrice) {
         sanitizedPrice = reservationPrice;
-        addCorrection(`最低許容価格(¥${reservationPrice.toLocaleString()})を下回ったため最低額に補正しました。`);
+        addCorrection({ key: 'reason.guardrail.belowMin', params: { price: reservationPrice } });
       }
 
       // 売り手自身の過去提示額より上がる逆行提示の防止
       if (lastOwnOffer && sanitizedPrice > lastOwnOffer.price && (sanitizedAction === 'make_offer' || sanitizedAction === 'counter_offer')) {
         sanitizedPrice = lastOwnOffer.price;
-        addCorrection(`前回の自己提示額(¥${lastOwnOffer.price.toLocaleString()})より高くならないよう補正しました。`);
+        addCorrection({ key: 'reason.guardrail.aboveOwnOffer', params: { price: lastOwnOffer.price } });
       }
     }
 
@@ -81,10 +90,10 @@ export class NegotiationGuardrails {
     if (sanitizedAction === 'wait') {
       if (!Number.isFinite(sanitizedWaitHours) || (sanitizedWaitHours ?? 0) < 1) {
         sanitizedWaitHours = 6;
-        addCorrection('待機時間を6時間に補正しました。');
+        addCorrection({ key: 'reason.guardrail.waitMin' });
       } else if ((sanitizedWaitHours ?? 0) > 72) {
         sanitizedWaitHours = 72;
-        addCorrection('待機時間を72時間以内に補正しました。');
+        addCorrection({ key: 'reason.guardrail.waitMax' });
       }
     }
 
@@ -94,6 +103,7 @@ export class NegotiationGuardrails {
       sanitizedPrice: Math.max(0, sanitizedPrice),
       sanitizedWaitHours,
       correctionReason,
+      correctionReasons,
     };
   }
 
